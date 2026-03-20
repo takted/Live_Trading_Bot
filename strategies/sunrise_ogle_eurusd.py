@@ -231,9 +231,9 @@ WINDOW_PRICE_OFFSET_MULTIPLIER = 0.01      # NEW: Price expansion multiplier (0.
 
 # === TIME RANGE FILTER ===
 USE_TIME_RANGE_FILTER = True              # ENABLED: Time filter for complete analysis
-ENTRY_START_HOUR = 21                      # Start hour for entry window (UTC)
+ENTRY_START_HOUR = 3                      # Start hour for entry window (UTC)
 ENTRY_START_MINUTE = 0                     # Start minute for entry window (UTC)
-ENTRY_END_HOUR = 3                        # End hour for entry window (UTC)
+ENTRY_END_HOUR = 21                        # End hour for entry window (UTC)
 ENTRY_END_MINUTE = 0                      # End minute for entry window (UTC)
 
 
@@ -325,6 +325,7 @@ class SunriseOgle(bt.Strategy):
         
         # === MULTI-DATA ISOLATION ===
         dataname=None,                    # Specific data feed name for multi-asset isolation
+        instrument_name=None,             # New parameter to pass the symbol name
     )
 
     def _record_trade_entry(self, signal_direction, dt, entry_price, position_size, current_atr):
@@ -735,75 +736,57 @@ class SunriseOgle(bt.Strategy):
         return True
     
     def _get_forex_instrument_config(self, instrument_name=None):
-        """Get forex configuration for USDCHF instrument.
+        """Get forex configuration for the given instrument."""
+        if instrument_name is None:
+            instrument_name = self.p.instrument_name or 'EURUSD'
         
-        Args:
-            instrument_name: Override instrument name (defaults to USDCHF)
-            
-        Returns:
-            dict: Configuration dictionary for USDCHF
-        """
-        # Auto-detect instrument from data filename if not specified
-        if instrument_name is None or instrument_name == 'AUTO':
-            data_filename = getattr(self, '_data_filename', '').upper()
-            
-            # Try to detect instrument from filename
-            if 'USDCHF' in data_filename:
-                instrument_name = 'USDCHF'
-            else:
-                instrument_name = 'USDCHF'  # Default to USDCHF for this cleaned version
-        
-        # USDCHF configuration only
         config = {
-            'USDCHF': {  # USD vs Swiss Franc
+            'EURUSD': {
+                'base_currency': 'EUR',
+                'quote_currency': 'USD',
+                'pip_value': 0.0001,
+                'pip_decimal_places': 4,
+                'lot_size': 100000,
+                'margin_required': 3.33,
+                'typical_spread': 2.2
+            },
+            'USDCHF': {
                 'base_currency': 'USD',
                 'quote_currency': 'CHF',
-                'pip_value': 0.0001,         # 1 pip = $0.0001
+                'pip_value': 0.0001,
                 'pip_decimal_places': 4,
-                'lot_size': 100000,          # 100,000 USD
-                'margin_required': 3.33,     # 3.33% (30:1 leverage)
+                'lot_size': 100000,
+                'margin_required': 3.33,
                 'typical_spread': 2.2
             }
         }
-        
-        return config.get(instrument_name, config['USDCHF'])
-    
+        return config.get(instrument_name, config['EURUSD'])
+
     def _apply_forex_config(self):
-        """Apply forex configuration for USDCHF."""
+        """Apply forex configuration based on the instrument name parameter."""
         if not self.p.use_forex_position_calc:
             return
             
-        # Get configuration for USDCHF
-        config = self._get_forex_instrument_config('USDCHF')
+        instrument_name = self.p.instrument_name
+        config = self._get_forex_instrument_config(instrument_name)
         
-        # Update parameters with USDCHF configuration
         self.p.forex_base_currency = config['base_currency']
         self.p.forex_quote_currency = config['quote_currency']
-        
-        # Store detected instrument for logging
-        self._detected_instrument = 'USDCHF'
-        data_filename = getattr(self, '_data_filename', '').upper()
-                
-        # Apply USDCHF configuration
         self.p.forex_pip_value = config['pip_value']
         self.p.forex_pip_decimal_places = config['pip_decimal_places']
         self.p.forex_lot_size = config['lot_size']
         self.p.forex_margin_required = config['margin_required']
         self.p.forex_spread_pips = config['typical_spread']
-        # Update the instrument parameter with USDCHF
-        self.p.forex_instrument = 'USDCHF'
+        self.p.forex_instrument = instrument_name
                 
-        # Log forex configuration
-        print(f"CONFIGURED: USDCHF from filename: {data_filename}")
+        print(f"CONFIGURED: {instrument_name}")
         print(f"Forex Config: {self.p.forex_base_currency}/{self.p.forex_quote_currency}")
-        print(f"Pip Value: {self.p.forex_pip_value} | Lot Size: {self.p.forex_lot_size:,} | Margin: {self.p.forex_margin_required}%")
 
     def __init__(self):
             # --- Multi-Data Isolation ---
             # Find the specific data feed this strategy instance should use
             if self.p.dataname:
                 self.data = self.getdatabyname(self.p.dataname)
-            # -------------------------
             
             d = self.data
             # Indicators
@@ -887,28 +870,19 @@ class SunriseOgle(bt.Strategy):
             self.blocked_entry_count = 0
             self.successful_entry_count = 0
             
-            # Store data filename for forex validation
-            self._data_filename = getattr(self.data._dataname, 'name', 
-                                        getattr(self.data, '_dataname', ''))
-            if isinstance(self._data_filename, str):
-                self._data_filename = Path(self._data_filename).name
-            
-            # Apply forex configuration based on instrument detection
             if self.p.use_forex_position_calc:
                 self._apply_forex_config()
-                self.p.contract_size = self.p.forex_lot_size  # Sync the contract size with the detected lot size
                 self._validate_forex_setup()
                 
             # Apply dual cerebro overrides for trading direction
             if self.p.long_enabled is not None:
                 self.p.enable_long_trades = self.p.long_enabled
                 
-            # Initialize trade reporting
             self._init_trade_reporting()
 
     def _init_trade_reporting(self):
         """Initialize trade reporting functionality"""
-        self.trade_reports = []  # Store trade details for export
+        self.trade_reports = []
         self.trade_report_file = None
         
         if EXPORT_TRADE_REPORTS or TRADE_REPORT_ENABLED:
@@ -918,13 +892,8 @@ class SunriseOgle(bt.Strategy):
                 report_dir = Path("temp_reports")
                 report_dir.mkdir(exist_ok=True)
                 
-                # Extract asset name from data filename
-                asset_name = "UNKNOWN"
-                if hasattr(self, '_data_filename') and self._data_filename:
-                    # Extract asset name from filename (e.g., "USDCHF_5m_5Yea.csv" -> "USDCHF")
-                    asset_name = str(self._data_filename).split('_')[0].replace('.csv', '')
+                asset_name = self.p.instrument_name or "UNKNOWN"
                 
-                # Create trade report filename with timestamp
                 from datetime import datetime
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 report_filename = f"{asset_name}_trades_{timestamp}.txt"
@@ -937,7 +906,6 @@ class SunriseOgle(bt.Strategy):
                 self.trade_report_file.write(f"=== SUNRISE STRATEGY TRADE REPORT ===\n")
                 self.trade_report_file.write(f"Asset: {asset_name}\n")
                 self.trade_report_file.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                self.trade_report_file.write(f"Data File: {self._data_filename}\n")
                 
                 # Trading configuration
                 direction = []
@@ -1007,7 +975,7 @@ class SunriseOgle(bt.Strategy):
 
     def _phase1_scan_for_signal(self):
         """PHASE 1: Scan for initial EMA crossover signals
-        
+
         Returns:
             str or None: 'LONG' or 'SHORT' if signal detected, None otherwise
         """
@@ -1064,7 +1032,7 @@ class SunriseOgle(bt.Strategy):
                         signal_valid = False
 
                 if signal_valid:
-                    # âœ… CRITICAL FIX: Store ATR when LONG signal is detected 
+                    # âœ… CRITICAL FIX: Store ATR when LONG signal is detected
                     current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                     self.signal_detection_atr = current_atr
                     return 'LONG'
@@ -1073,10 +1041,10 @@ class SunriseOgle(bt.Strategy):
 
     def _phase2_confirm_pullback(self, armed_direction):
         """PHASE 2: Count pullback candles and validate pullback sequence
-        
+
         Args:
             armed_direction: 'LONG' or 'SHORT'
-            
+
         Returns:
             bool: True if pullback conditions are satisfied
         """
@@ -1115,12 +1083,12 @@ class SunriseOgle(bt.Strategy):
 
     def _phase3_open_breakout_window(self, armed_direction):
         """PHASE 3: Open the two-sided breakout window after pullback confirmation
-        
+
         Implements true volatility expansion channel with:
         - Optional time offset controlled by use_window_time_offset parameter
         - Two-sided channel with success and failure boundaries
         - Breaking failure boundary resets to ARMED state (instability detection)
-        
+
         Args:
             armed_direction: 'LONG' or 'SHORT'
         """
@@ -1135,7 +1103,7 @@ class SunriseOgle(bt.Strategy):
         self.window_bar_start = window_start_bar
         
         # 2. Set Window Duration
-        window_periods = (self.p.long_entry_window_periods if armed_direction == 'LONG' 
+        window_periods = (self.p.long_entry_window_periods if armed_direction == 'LONG'
                          else self.p.short_entry_window_periods)
         self.window_expiry_bar = window_start_bar + window_periods
 
@@ -1162,15 +1130,15 @@ class SunriseOgle(bt.Strategy):
 
     def _phase4_monitor_window(self, armed_direction):
         """PHASE 4: Monitor for breakout or failure within the two-sided channel
-        
+
         Implements true volatility expansion channel with:
         - Success boundaries for entry signals
         - Failure boundaries that indicate instability and reset to ARMED state
         - Window timeout handling
-        
+
         Args:
             armed_direction: 'LONG' or 'SHORT'
-            
+
         Returns:
             str: 'SUCCESS' if breakout detected, None if no action needed
         """
@@ -1290,17 +1258,17 @@ class SunriseOgle(bt.Strategy):
         if self.position:
             # Check exit conditions
             bars_since_entry = len(self) - self.last_entry_bar if self.last_entry_bar is not None else 0
-            
+
             # Determine position direction (LONG = positive size, SHORT = negative size)
             position_direction = 'LONG' if self.position.size > 0 else 'SHORT'
-            
+
             # Continue holding - no new entry logic when in position
             return
 
         # =====================================================================
         # ENTRY LOGIC SECTION - NEW 4-PHASE VOLATILITY EXPANSION SYSTEM
         # =====================================================================
-        
+
         # Pine Script prevention: No entry if exit was taken on same bar
         if self.exit_this_bar:
             if self.p.print_signals:
@@ -1310,7 +1278,7 @@ class SunriseOgle(bt.Strategy):
         # =====================================================================
         # 4-PHASE STATE MACHINE ENTRY SYSTEM
         # =====================================================================
-        
+
         # GLOBAL INVALIDATION RULE: Reset armed states if opposing EMA crossover occurs
         if self.entry_state == "ARMED_LONG":
             opposing_signal = None
@@ -1513,7 +1481,7 @@ class SunriseOgle(bt.Strategy):
         """Return tuple (signal_type, has_signal) for entry constraints.
 
         Returns:
-            ('LONG', True) if LONG entry conditions met  
+            ('LONG', True) if LONG entry conditions met
             (None, False) if no entry conditions met
         """
         dt = bt.num2date(self.data.datetime[0])
@@ -1531,7 +1499,7 @@ class SunriseOgle(bt.Strategy):
     
     def _standard_entry_signal(self, dt, direction):
         """Standard entry logic without pullback system
-        
+
         Args:
             dt: Current datetime
             direction: 'LONG' or 'SHORT'
@@ -1544,7 +1512,7 @@ class SunriseOgle(bt.Strategy):
             return False
     
     def _standard_long_entry_signal(self, dt):
-        """Standard LONG entry logic without pullback system"""        
+        """Standard LONG entry logic without pullback system"""
         # 1. Previous candle bullish check (optional)
         try:
             prev_bull = self.data.close[-1] > self.data.open[-1]
@@ -1608,11 +1576,11 @@ class SunriseOgle(bt.Strategy):
 
     def _handle_pullback_entry(self, dt, direction='LONG'):
         """LONG-only pullback entry state machine logic
-        
+
         Args:
             dt: Current datetime
             direction: 'LONG' signal direction only
-            
+
         Returns:
             Boolean indicating if entry should be executed
         """
@@ -1716,9 +1684,9 @@ class SunriseOgle(bt.Strategy):
                                     self._reset_pullback_state()
                                     return False
                             # If decrement filter is DISABLED, allow all decrements (pass through)
-                        
+
                         # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
-                    
+
                     # Transition to Phase 3: Start entry window countdown
                     self.pullback_state = "WAITING_BREAKOUT"
                     self.entry_window_start = current_bar
@@ -1761,7 +1729,7 @@ class SunriseOgle(bt.Strategy):
                 if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
                     atr_change = current_atr - self.signal_detection_atr
                     
-                    # ATR CHANGE FILTERING LOGIC (ROBUST) 
+                    # ATR CHANGE FILTERING LOGIC (ROBUST)
                     # Rule 1: If ATR is incrementing (positive change: low â†’ high volatility)
                     if atr_change > 0:
                         if self.p.long_use_atr_increment_filter:
@@ -1785,9 +1753,9 @@ class SunriseOgle(bt.Strategy):
                                     print(f"ATR DECREMENT Filter: LONG entry rejected - ATR change {atr_change:+.6f} outside range [{self.p.long_atr_decrement_min_threshold:.6f}, {self.p.long_atr_decrement_max_threshold:.6f}]")
                                 return False
                         # If decrement filter is DISABLED, allow all decrements (pass through)
-                    
+
                     # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
-                    
+
                     if self.p.print_signals:
                         atr_info = ""
                         if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
@@ -1806,7 +1774,7 @@ class SunriseOgle(bt.Strategy):
                     # ✅ CRITICAL FIX: Restore ATR values AFTER reset for trade recording
                     self.entry_signal_detection_atr = temp_signal_detection_atr
                     self.entry_atr_increment = temp_entry_atr_increment
-                    print(f"DEBUG LONG: After restore - entry_signal_detection_atr={self.entry_signal_detection_atr}, entry_atr_increment={self.entry_atr_increment}")  # DEBUG
+                    print(f"DEBUG LONG: After restore - entry_signal_detection_atr={self.entry_signal_detection_atr}, entry_atr_increment={self.entry_atr_increment}")
 
                     return True
             return False
@@ -1820,15 +1788,15 @@ class SunriseOgle(bt.Strategy):
             if self.p.verbose_debug:
                 print(f"Time Filter: SHORT entry rejected - {dt.hour:02d}:{dt.minute:02d} outside {self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d} UTC")
             return False
-            
+
         current_bar = len(self)
         current_close = float(self.data.close[0])
         current_open = float(self.data.open[0])
         current_low = float(self.data.low[0])
-        
+
         # Check if current candle is green (bullish) - opposite for SHORT
         is_green_candle = current_close > current_open
-        
+
         # PHASE 1: SIGNAL DETECTION
         if self.pullback_state == "NORMAL":
             # Check for initial SHORT entry conditions (EMA crossunder + previous bearish candle + filters)
@@ -1837,7 +1805,7 @@ class SunriseOgle(bt.Strategy):
                 current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                 self.signal_detection_atr = current_atr
                 self.signal_detection_bar = len(self)  # Track bar number when signal was detected
-                
+
                 # Check ATR range threshold if filter is enabled
                 if self.p.short_use_atr_filter:
                     if current_atr < self.p.short_atr_min_threshold:
@@ -1848,7 +1816,7 @@ class SunriseOgle(bt.Strategy):
                         if self.p.verbose_debug:
                             print(f"SHORT ATR Filter: Signal rejected - ATR {current_atr:.6f} > max threshold {self.p.short_atr_max_threshold:.6f}")
                         return False
-                
+
                 # Transition to Phase 2: Wait for pullback
                 self.pullback_state = "WAITING_PULLBACK"
                 self.pullback_green_count = 0  # Count GREEN candles for SHORT
@@ -1856,34 +1824,34 @@ class SunriseOgle(bt.Strategy):
                 self.breakout_target = None    # Will be set by first pullback candle
                 return False  # Don't enter yet, wait for pullback
             return False
-            
+
         # PHASE 2: PULLBACK WAIT & SETTING THE BREAKOUT LEVEL
         elif self.pullback_state == "WAITING_PULLBACK":
             if is_green_candle:  # GREEN candles for SHORT pullback
                 self.pullback_green_count += 1
-                
+
                 # CRITICAL: Set breakout level ONLY from the FIRST green candle
                 if self.pullback_green_count == 1:
                     self.first_green_low = current_low
                     # Set breakout target immediately when first pullback candle appears
                     self.breakout_target = self.first_green_low
-                
+
                 # Check if we exceeded max green candles
                 if self.pullback_green_count > self.p.short_pullback_max_candles:
                     self._reset_pullback_state()
                     return False
-                    
+
             else:  # Red candle - pullback sequence ended
                 if self.pullback_green_count >= self.p.short_pullback_max_candles:
                     # Pullback sequence complete (required number of green candles occurred)
                     # Store ATR value when pullback phase ends
                     current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                     self.pullback_start_atr = current_atr
-                    
+
                     # Check ATR increment/decrement condition if filter is enabled
                     if self.p.short_use_atr_filter and self.signal_detection_atr is not None:
                         atr_change = current_atr - self.signal_detection_atr
-                        
+
                         # ATR CHANGE FILTERING LOGIC
                         # Rule 1: If ATR is incrementing (positive change: low â†’ high volatility)
                         if atr_change > 0:
@@ -1895,7 +1863,7 @@ class SunriseOgle(bt.Strategy):
                                     self._reset_pullback_state()
                                     return False
                             # If increment filter is DISABLED, allow all increments for SHORT (different strategy)
-                        
+
                         # Rule 2: If ATR is decrementing (negative change: high low volatility)
                         elif atr_change < 0:
                             if self.p.short_use_atr_decrement_filter:
@@ -1906,9 +1874,9 @@ class SunriseOgle(bt.Strategy):
                                     self._reset_pullback_state()
                                     return False
                         # If decrement filter is DISABLED, allow all decrements (pass through)
-                        
+
                         # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
-                    
+
                     # Transition to Phase 3: Start entry window countdown
                     self.pullback_state = "WAITING_BREAKOUT"
                     self.entry_window_start = current_bar
@@ -1916,7 +1884,7 @@ class SunriseOgle(bt.Strategy):
                     # No pullback occurred (no green candles), reset
                     self._reset_pullback_state()
             return False
-            
+
         # PHASE 3: BREAKOUT CONFIRMATION AND ENTRY
         elif self.pullback_state == "WAITING_BREAKOUT":
             # Check if entry window expired
@@ -1928,7 +1896,7 @@ class SunriseOgle(bt.Strategy):
             if bars_in_window >= self.p.short_entry_window_periods:
                 self._reset_pullback_state()
                 return False
-            
+
             # Entry Trigger Condition: current low <= breakout_target (already includes pip offset)
             if current_low <= self.breakout_target:
                 # ✅ CRITICAL FIX: Validate ALL filters BEFORE any entry processing
@@ -1936,11 +1904,11 @@ class SunriseOgle(bt.Strategy):
                     if self.p.verbose_debug:
                         print(f"ENTRY BLOCKED: SHORT entry validation failed at breakout")
                     return False
-                
+
                 # Breakout detected! All SHORT entry conditions passed
                 # Calculate ATR increment for validation and recording
                 current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
-                
+
                 # Always calculate ATR change for reporting purposes
                 if self.signal_detection_atr is not None:
                     atr_change = current_atr - self.signal_detection_atr
@@ -1950,11 +1918,11 @@ class SunriseOgle(bt.Strategy):
                 else:
                     self.entry_atr_increment = None
                     self.entry_signal_detection_atr = None
-                
+
                 # Check ATR increment/decrement threshold if ATR filter is enabled
                 if self.p.short_use_atr_filter and self.signal_detection_atr is not None:
                     atr_change = current_atr - self.signal_detection_atr
-                    
+
                     # ATR CHANGE FILTERING LOGIC (ROBUST)
                     # Rule 1: If ATR is incrementing (positive change: high volatility)
                     if atr_change > 0:
@@ -1975,21 +1943,21 @@ class SunriseOgle(bt.Strategy):
                                     print(f"ATR DECREMENT Filter: SHORT entry rejected - ATR change {atr_change:+.6f} outside range [{self.p.short_atr_decrement_min_threshold:.6f}, {self.p.short_atr_decrement_max_threshold:.6f}]")
                                 return False
                         # If decrement filter is DISABLED, allow all decrements (pass through)
-                    
+
                     # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
-                
+
                 if self.p.print_signals:
                     atr_info = ""
                     if self.p.short_use_atr_filter and self.signal_detection_atr is not None:
                         atr_change = self.entry_atr_increment if self.entry_atr_increment is not None else current_atr - self.signal_detection_atr
                         atr_info = f" | ATR: {current_atr:.6f} (signal: {self.signal_detection_atr:.6f}, inc: {atr_change:+.6f})"
                     print(f"SHORT BREAKOUT ENTRY! Low={current_low:.5f} <= target={self.breakout_target:.5f}{atr_info}")
-                
+
                 # âœ… CRITICAL FIX: Store ATR values BEFORE reset to preserve them for trade recording
                 temp_signal_detection_atr = self.signal_detection_atr
                 temp_entry_atr_increment = self.entry_atr_increment
                 print(f"DEBUG SHORT: Before reset - signal_detection_atr={temp_signal_detection_atr}, entry_atr_increment={temp_entry_atr_increment}")  # DEBUG
-                
+
                 # Reset state machine and trigger entry
                 self._reset_pullback_state()
 
@@ -2000,9 +1968,9 @@ class SunriseOgle(bt.Strategy):
 
                 return True
             return False
-        
+
         return False
-    
+
     def _is_in_trading_time_range(self, dt):
         """Check if current time is within allowed trading hours (UTC)"""
         if not self.p.use_time_range_filter:
@@ -2268,7 +2236,7 @@ class SunriseOgle(bt.Strategy):
 
     def notify_trade(self, trade):
         """Use Backtrader's proper trade notification for accurate PnL tracking"""
-        
+
         if not trade.isclosed:
             return
 
@@ -2281,7 +2249,7 @@ class SunriseOgle(bt.Strategy):
         # For LONG trades: PnL = (exit_price - entry_price) * size - commission
         # For SHORT trades: PnL = (entry_price - exit_price) * size - commission
         # In both cases: exit_price can be calculated from entry_price and pnl
-        
+
         entry_price = self.last_entry_price if self.last_entry_price else 0
         position_direction = 'LONG' if trade.size > 0 else 'SHORT'
         
