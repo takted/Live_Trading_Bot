@@ -39,7 +39,8 @@ CREDENTIALS_FILE = PROJECT_ROOT / 'config' / 'itrading_credentials.json'
 STRATEGIES_DIR = PROJECT_ROOT / "strategies"
 
 STRATEGIES_TO_IMPORT = [
-    ('sunrise_ogle_eurusd', 'SunriseOgle', 'EURUSD'),
+    ('itrading_strategy_audusd', 'ITradingStrategy', 'AUDUSD'),
+ #   ('itrading_strategy_eurusd', 'ITradingStrategy', 'EURUSD'),
  #   ('sunrise_ogle_gbpusd', 'SunriseOgle', 'GBPUSD'),
  #   ('sunrise_ogle_xauusd', 'SunriseOgle', 'XAUUSD'),
  #   ('sunrise_ogle_audusd', 'SunriseOgle', 'AUDUSD'),
