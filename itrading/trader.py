@@ -134,15 +134,15 @@ class ITradingTrader:
         contract = self.create_contract(symbol, sec_type)
         self.ib_connection.client.historical_data.clear()
         self.ib_connection.client.historical_data_end_event.clear()
-        self.ib_connection.client.reqHistoricalData(4001, contract, "", "1 D", config.DEFAULT_TIMEFRAME, "MIDPOINT", 1, 2, False, [])
-        if not self.ib_connection.client.historical_data_end_event.wait(timeout=45):
+        self.ib_connection.client.reqHistoricalData(4001, contract, "", "65 D", config.DEFAULT_TIMEFRAME, "MIDPOINT", 1, 2, False, [])
+        if not self.ib_connection.client.historical_data_end_event.wait(timeout=145):
             self.logger.warning(f"Timeout waiting for historical data for {symbol}.")
             return
         bars = self.ib_connection.client.historical_data
         self.logger.info(f"Successfully received {len(bars)} historical bars for {symbol}.")
         if bars:
             print("Last 5 bars:")
-            for bar in bars[-245:]:
+            for bar in bars[-11:]:
                 dt_object = datetime.fromtimestamp(int(bar['date']))
                 print(f"{dt_object.strftime('%Y-%m-%d %H:%M:%S')} | O={bar['open']} H={bar['high']} L={bar['low']} C={bar['close']} V={bar['volume']}")
         print_contract_details(contract)

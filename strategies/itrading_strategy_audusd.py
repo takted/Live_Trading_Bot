@@ -229,7 +229,7 @@ ENABLE_SHORT_TRADES = False           # Enable short (sell) entries
 RUN_DUAL_CEREBRO = False             # Run separate LONG-only and SHORT-only cerebros to avoid position interference
 
 # === DEBUG SETTINGS ===
-VERBOSE_DEBUG = False                 # Print detailed debug info to console (set True only for troubleshooting)
+VERBOSE_DEBUG = True  #False                 # Print detailed debug info to console (set True only for troubleshooting)
 
 # === TRADE REPORTING ===
 EXPORT_TRADE_REPORTS = True          # Export detailed trade reports to temp_reports directory
@@ -2468,12 +2468,17 @@ class ITradingStrategy(bt.Strategy):
                 self.ema_confirm[0] > self.ema_slow[0]
             )
             if not ema_order_ok:
+                if self.p.verbose_debug:
+                    print(f"❌ EMA ORDER CONDITION FAILED: ema confirm {self.ema_confirm[0]} > ema fast {self.ema_fast[0]} > ema medium {self.ema_medium[0]} > ema slow {self.ema_slow[0]}")
                 return False
 
         # 4. Price filter EMA
         if self.p.long_use_price_filter_ema:
             price_above_filter = self.data.close[0] > self.ema_filter_price[0]
             if not price_above_filter:
+                if self.p.verbose_debug:
+                    print(
+                        f"❌ EMA PRICE FILER FAILED: close {self.data.close[0]} > ema fildetr price {self.ema_filter_price[0]}")
                 return False
         
         # 4.5. EMA position filter (LONG: all EMAs below price)
@@ -2484,6 +2489,9 @@ class ITradingStrategy(bt.Strategy):
                 self.ema_slow[0] < self.data.close[0]
             )
             if not emas_below_price:
+                if self.p.verbose_debug:
+                    print(
+                        f"❌ EMA POSITION FILTER FAILED: close {self.data.close[0]} > ema fast {self.ema_fast[0]} > ema medium {self.ema_medium[0]} > ema slow {self.ema_slow[0]}")
                 return False
 
         # 5. Angle filter

@@ -90,8 +90,10 @@ class ITradingConnection:
 
         account_type = self.account_info.get('AccountType', {}).get('value', 'N/A')
         net_liq = self.account_info.get('NetLiquidation', {})
+        tot_cash = self.account_info.get('TotalCashValue', {})
         self.logger.info(f"Connected to IBKR - Account Type: {account_type}")
         self.logger.info(f"Account Net Liquidation: {net_liq.get('value')} {net_liq.get('currency', '')}")
+        self.logger.info(f"Account Total Cash Value: {tot_cash.get('value')} {tot_cash.get('currency', '')}")
 
         if self.client.server_version < config.MIN_SERVER_VERSION:
             self.logger.error(f"TWS/Gateway version {self.client.server_version} is too old. Please upgrade.")
