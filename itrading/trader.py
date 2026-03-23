@@ -134,7 +134,7 @@ class ITradingTrader:
         contract = self.create_contract(symbol, sec_type)
         self.ib_connection.client.historical_data.clear()
         self.ib_connection.client.historical_data_end_event.clear()
-        self.ib_connection.client.reqHistoricalData(4001, contract, "", "65 D", config.DEFAULT_TIMEFRAME, "MIDPOINT", 1, 2, False, [])
+        self.ib_connection.client.reqHistoricalData(4001, contract, "", "31 D", config.DEFAULT_TIMEFRAME, "MIDPOINT", 1, 2, False, [])
         if not self.ib_connection.client.historical_data_end_event.wait(timeout=145):
             self.logger.warning(f"Timeout waiting for historical data for {symbol}.")
             return

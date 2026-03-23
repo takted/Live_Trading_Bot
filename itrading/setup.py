@@ -60,8 +60,10 @@ def test_ibkr_connection():
         print("✅ IBKR connection successful!")
         account_type = ib_conn.account_info.get('AccountType', {}).get('value', 'N/A')
         net_liq = ib_conn.account_info.get('NetLiquidation', {})
+        tot_cash = ib_conn.account_info.get('TotalCashValue', {})
         print(f"📊 Account Type: {account_type}")
         print(f"💰 Net Liquidation: {net_liq.get('value')} {net_liq.get('currency', '')}")
+        print(f"💰 Total Cash Value: {tot_cash.get('value')} {tot_cash.get('currency', '')}")
         ib_conn.disconnect()
         return True
     else:

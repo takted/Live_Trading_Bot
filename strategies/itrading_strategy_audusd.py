@@ -211,7 +211,7 @@ DATA_FILENAME = 'AUDUSD_5m_5Yea.csv'     # 🇦🇺 Australian Dollar vs US Doll
 # === BACKTEST SETTINGS ===
 FROMDATE = '2020-07-10'               # Start date for backtesting (YYYY-MM-DD)
 TODATE = '2025-07-25'                 # End date for backtesting (YYYY-MM-DD)
-STARTING_CASH = 100000.0              # Initial account balance in USD
+STARTING_CASH = 10000.0              # Initial account balance in USD
 QUICK_TEST = False                    # True: Reduce to last 10 days for quick testing
 LIMIT_BARS = 0                        # >0: Stop after N bars processed (0 = no limit)
 ENABLE_PLOT = True                    # Show final chart with trades (requires matplotlib)
@@ -2981,10 +2981,10 @@ if __name__ == '__main__':
     cerebro.adddata(data)
     cerebro.broker.setcash(STARTING_CASH)
     cerebro.broker.setcommission(leverage=30.0)
-    cerebro.addstrategy(SunriseOgle, **STRAT_KWARGS)
-    try: cerebro.addobserver(bt.observers.BuySell, barplot=False, plotdist=SunriseOgle.params.buy_sell_plotdist)
+    cerebro.addstrategy(ITradingStrategy, **STRAT_KWARGS)
+    try: cerebro.addobserver(bt.observers.BuySell, barplot=False, plotdist=ITradingStrategy.params.buy_sell_plotdist)
     except Exception: pass
-    if SunriseOgle.params.plot_sltp_lines:
+    if ITradingStrategy.params.plot_sltp_lines:
         try: cerebro.addobserver(SLTPObserver)
         except Exception: pass
     try: cerebro.addobserver(bt.observers.Value)
@@ -2992,12 +2992,12 @@ if __name__ == '__main__':
 
     if LIMIT_BARS > 0:
         # Monkey-patch next() to stop early after LIMIT_BARS bars for quick experimentation.
-        orig_next = SunriseOgle.next
+        orig_next = ITradingStrategy.next
         def limited_next(self):
             if len(self.data) >= LIMIT_BARS:
                 self.env.runstop(); return
             orig_next(self)
-        SunriseOgle.next = limited_next
+        ITradingStrategy.next = limited_next
 
     print(f"=== SUNRISE OGLE === (from {FROMDATE} to {TODATE})")
     if ENABLE_FOREX_CALC:
@@ -3026,7 +3026,7 @@ if __name__ == '__main__':
         })
         cerebro_long.addstrategy(SunriseOgle, **long_kwargs)
         
-        try: cerebro_long.addobserver(bt.observers.BuySell, barplot=False, plotdist=SunriseOgle.params.buy_sell_plotdist)
+        try: cerebro_long.addobserver(bt.observers.BuySell, barplot=False, plotdist=ITradingStrategy.params.buy_sell_plotdist)
         except Exception: pass
         if SunriseOgle.params.plot_sltp_lines:
             try: cerebro_long.addobserver(SLTPObserver)
@@ -3052,11 +3052,11 @@ if __name__ == '__main__':
             'short_enabled': True,
             'print_signals': True
         })
-        cerebro_short.addstrategy(SunriseOgle, **short_kwargs)
+        cerebro_short.addstrategy(ITradingStrategy, **short_kwargs)
         
-        try: cerebro_short.addobserver(bt.observers.BuySell, barplot=False, plotdist=SunriseOgle.params.buy_sell_plotdist)
+        try: cerebro_short.addobserver(bt.observers.BuySell, barplot=False, plotdist=ITradingStrategy.params.buy_sell_plotdist)
         except Exception: pass
-        if SunriseOgle.params.plot_sltp_lines:
+        if ITradingStrategy.params.plot_sltp_lines:
             try: cerebro_short.addobserver(SLTPObserver)
             except Exception: pass
         try: cerebro_short.addobserver(bt.observers.Value)
@@ -3265,10 +3265,10 @@ if __name__ == '__main__':
         cerebro.adddata(data)
         cerebro.broker.setcash(STARTING_CASH)
         cerebro.broker.setcommission(leverage=30.0)
-        cerebro.addstrategy(SunriseOgle, **STRAT_KWARGS)
-        try: cerebro.addobserver(bt.observers.BuySell, barplot=False, plotdist=SunriseOgle.params.buy_sell_plotdist)
+        cerebro.addstrategy(ITradingStrategy, **STRAT_KWARGS)
+        try: cerebro.addobserver(bt.observers.BuySell, barplot=False, plotdist=ITradingStrategy.params.buy_sell_plotdist)
         except Exception: pass
-        if SunriseOgle.params.plot_sltp_lines:
+        if ITradingStrategy.params.plot_sltp_lines:
             try: cerebro.addobserver(SLTPObserver)
             except Exception: pass
         try: cerebro.addobserver(bt.observers.Value)
@@ -3276,12 +3276,12 @@ if __name__ == '__main__':
 
         if LIMIT_BARS > 0:
             # Monkey-patch next() to stop early after LIMIT_BARS bars for quick experimentation.
-            orig_next = SunriseOgle.next
+            orig_next = ITradingStrategy.next
             def limited_next(self):
                 if len(self.data) >= LIMIT_BARS:
                     self.env.runstop(); return
                 orig_next(self)
-            SunriseOgle.next = limited_next
+            ITradingStrategy.next = limited_next
 
         results = cerebro.run()
         final_value = cerebro.broker.getvalue()

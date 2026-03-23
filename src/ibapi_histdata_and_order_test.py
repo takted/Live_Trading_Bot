@@ -6,7 +6,7 @@ from pathlib import Path
 if __package__:
     from src.ib_client import IBApiClient
     from src.market_data import fetch_historical_bars
-    from src.orders import make_market_order
+    from itrading.orders import make_market_order
 else:
     current_file = Path(__file__).resolve()
     src_root = current_file.parent.parent
@@ -15,7 +15,7 @@ else:
 
     from src.ib_client import IBApiClient
     from src.market_data import fetch_historical_bars
-    from src.orders import make_market_order
+    from itrading.orders import make_market_order
 
 from itrading import SecurityType
 from ibapi.contract import Contract
