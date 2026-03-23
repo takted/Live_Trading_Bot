@@ -1,11 +1,11 @@
 import backtrader as bt
-from backtrader.stores import IBStore
+from backtrader.stores.ibstore import IBStore  # Corrected import path
 from ibapi.order import Order
 
 from . import orders
 
 
-class CustomIBStore(IBStore):
+class ITradingIBStore(IBStore):
     """
     Custom IBStore to use our own order creation logic.
     This acts as the "translator" between backtrader's generic order requests

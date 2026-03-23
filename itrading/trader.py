@@ -175,7 +175,7 @@ class ITradingTrader:
         self.logger.info(f"DataFrame Head:\n{df.head().to_string()}")
 
         data_feed = bt.feeds.PandasData(dataname=df)
-        
+
         cerebro = bt.Cerebro()
         cerebro.adddata(data_feed)
         cerebro.addstrategy(strategy_class, instrument_name=symbol)
