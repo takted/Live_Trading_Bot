@@ -19,6 +19,19 @@ class ITradingWrapper(EWrapper, EClient):
         self.historical_data_end_event = threading.Event()
         self.historical_data = []
 
+    def get_next_order_id(self) -> int:
+        """Gets the next valid order ID and increments it."""
+        if self.next_valid_id is None:
+            self.logger.error("Next valid order ID is not set. Cannot place order.")
+            # Request the next valid ID from TWS. This is an async call.
+            # A proper implementation would wait for the response.
+            self.reqIds(-1)
+            return -1 # Indicate failure
+        
+        order_id = self.next_valid_id
+        self.next_valid_id += 1
+        return order_id
+
     def nextValidId(self, orderId: int):
         """Receives next valid order id."""
         super().nextValidId(orderId)

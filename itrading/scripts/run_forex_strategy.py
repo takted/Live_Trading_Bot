@@ -6,7 +6,9 @@ import sys
 import backtrader as bt
 import pandas as pd
 from ibapi.contract import Contract
+from ibapi.order import Order
 from datetime import datetime
+import queue
 
 # Add project root to path to allow importing 'itrading'
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -50,6 +52,7 @@ class ForexStrategyRunner:
         self.ib_connection = None
         self.running = False
         self.emergency_stop = False
+        self.signal_queue = queue.Queue()
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
@@ -59,11 +62,107 @@ class ForexStrategyRunner:
         self.emergency_stop = True
         self.stop()
 
-    def start(self):
-        if self.params.get('RUN_DUAL_CEREBRO', False):
+    def start(self, live=False):
+        if live:
+            self.logger.info("Starting LIVE TRADING mode...")
+            self.run_live_strategy()
+        elif self.params.get('RUN_DUAL_CEREBRO', False):
+            self.logger.info(f"Starting DUAL CEREBRO mode...")
             self.run_dual_strategy()
         else:
+            self.logger.info(f"Starting SINGLE CEREBRO mode...")
             self.run_single_strategy()
+
+    def run_live_strategy(self):
+        """Runs the strategy in live mode, generating signals and executing them via ibapi."""
+        self.ib_connection = ITradingConnection(self.logger)
+        success, message = self.ib_connection.connect()
+        if not success:
+            self.logger.error(f"Failed to connect to IBKR for live trading: {message}")
+            return
+
+        self.running = True
+        self.logger.info("Starting Live Forex Strategy Runner...")
+
+        try:
+            while self.running and not self.emergency_stop:
+                # This will now run the backtrader engine for one cycle to get a signal
+                self.execute_strategy_run(live_trading=True)
+
+                # Check for a signal from the strategy
+                try:
+                    signal = self.signal_queue.get(block=False)
+                    self.logger.info(f"Signal received: {signal}")
+                    self.execute_live_trade(signal)
+                except queue.Empty:
+                    # No signal, continue
+                    pass
+                
+                if not self.emergency_stop:
+                    self.logger.info(f"Waiting for {self.params['SIGNAL_CHECK_INTERVAL']} seconds before next run...")
+                    time.sleep(self.params['SIGNAL_CHECK_INTERVAL'])
+
+        except KeyboardInterrupt:
+            self.logger.info("Live trading interrupted by user.")
+        finally:
+            self.stop()
+
+    def execute_live_trade(self, signal):
+        """Executes a live trade based on a signal from the strategy."""
+        self.logger.info(f"Executing live trade for signal: {signal}")
+
+        # Create contract
+        symbol = self.params['FOREX_INSTRUMENT']
+        contract = Contract()
+        contract.symbol = symbol[:3]
+        contract.secType = SecurityType.Forex
+        contract.currency = symbol[3:]
+        contract.exchange = self.params['EXCHANGE']
+
+        # Round prices to the correct precision for the contract (e.g., 5 decimals for most FX)
+        price_precision = self.params.get('PRICE_PRECISION', 5)
+        stop_loss_price = round(signal['stop_loss'], price_precision)
+        take_profit_price = round(signal['take_profit'], price_precision)
+        
+        action = "BUY" if signal['direction'] == 'LONG' else 'SELL'
+        quantity = signal['size']
+
+        # Parent Order
+        parent = Order()
+        parent.orderId = self.ib_connection.client.get_next_order_id()
+        parent.action = action
+        parent.orderType = "MKT"
+        parent.totalQuantity = quantity
+        parent.tif = "GTC"
+        parent.transmit = True # Set to True to override presets
+
+        # Stop Loss Order
+        stop_loss_order = Order()
+        stop_loss_order.orderId = self.ib_connection.client.get_next_order_id()
+        stop_loss_order.action = "SELL" if action == "BUY" else "BUY"
+        stop_loss_order.orderType = "STP"
+        stop_loss_order.auxPrice = stop_loss_price
+        stop_loss_order.totalQuantity = quantity
+        stop_loss_order.tif = "GTC"
+        stop_loss_order.parentId = parent.orderId
+        stop_loss_order.transmit = True # Set to True to override presets
+
+        # Take Profit Order
+        take_profit_order = Order()
+        take_profit_order.orderId = self.ib_connection.client.get_next_order_id()
+        take_profit_order.action = "SELL" if action == "BUY" else "BUY"
+        take_profit_order.orderType = "LMT"
+        take_profit_order.lmtPrice = take_profit_price
+        take_profit_order.totalQuantity = quantity
+        take_profit_order.tif = "GTC"
+        take_profit_order.parentId = parent.orderId
+        take_profit_order.transmit = True # Set to True to override presets
+
+        self.logger.info(f"Placing bracket order: {action} {quantity} {symbol} SL: {stop_loss_price} TP: {take_profit_price}")
+        self.ib_connection.client.placeOrder(parent.orderId, contract, parent)
+        self.ib_connection.client.placeOrder(stop_loss_order.orderId, contract, stop_loss_order)
+        self.ib_connection.client.placeOrder(take_profit_order.orderId, contract, take_profit_order)
+
 
     def run_single_strategy(self):
         self.ib_connection = ITradingConnection(self.logger)
@@ -88,7 +187,7 @@ class ForexStrategyRunner:
         finally:
             self.stop()
 
-    def execute_strategy_run(self, long_only=None, short_only=None):
+    def execute_strategy_run(self, long_only=None, short_only=None, live_trading=False):
         """Encapsulates the logic to run the strategy once."""
         try:
             # Create contract
@@ -97,7 +196,7 @@ class ForexStrategyRunner:
             contract.symbol = symbol[:3]
             contract.secType = SecurityType.Forex
             contract.currency = symbol[3:]
-            contract.exchange = "IDEALPRO"
+            contract.exchange = self.params['EXCHANGE']
 
             # Request historical data
             self.logger.info(f"Requesting historical data for {symbol}...")
@@ -147,7 +246,11 @@ class ForexStrategyRunner:
             cerebro.broker.setcash(self.params['STARTING_CASH'])
             cerebro.broker.setcommission(leverage=30.0)
             
-            strat_kwargs = {'instrument_name': symbol}
+            strat_kwargs = {
+                'instrument_name': symbol,
+                'live_trading': live_trading,
+                'signal_queue': self.signal_queue
+            }
             if long_only is not None:
                 strat_kwargs['long_enabled'] = long_only
             if short_only is not None:
@@ -219,4 +322,5 @@ if __name__ == '__main__':
     logger = ITradingLogger()
     
     runner = ForexStrategyRunner(params, logger)
-    runner.start()
+    # To run in live mode, change the parameter to live=True
+    runner.start(live=True)

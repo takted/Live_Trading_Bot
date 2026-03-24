@@ -325,6 +325,10 @@ ENTRY_END_MINUTE = 0  # End minute for entry window (UTC)
 
 class ITradingStrategy(bt.Strategy):
     params = dict(
+        # === LIVE TRADING / SIGNALING ===
+        live_trading=False, # Set to True for live mode to generate signals instead of orders
+        signal_queue=None, # Queue for passing signals to the runner
+
         # === TECHNICAL INDICATORS ===
         ema_fast_length=18,  # Fast EMA period for trend detection #14
         ema_medium_length=18,  # Medium EMA period for trend confirmation #18
@@ -1494,6 +1498,11 @@ class ITradingStrategy(bt.Strategy):
 
     def next(self):
         """Main strategy logic using volatility expansion channel entry system with 4-phase state machine"""
+        # In live mode, do not execute logic if there is already a position.
+        # The runner is responsible for managing the single live position.
+        if self.p.live_trading and self.position:
+            return
+
         # Track portfolio value and timestamp for plotting
         if hasattr(self, '_portfolio_values'):
             self._portfolio_values.append(self.broker.get_value())
@@ -1840,27 +1849,40 @@ class ITradingStrategy(bt.Strategy):
 
                 bt_size = contracts * self.p.contract_size
 
-                # Place market order based on signal direction
-                if signal_direction == 'LONG':
-                    self.order = self.buy(size=bt_size)
-                    signal_type_display = " LONG BUY"
-                elif signal_direction == 'SHORT':
-                    self.order = self.sell(size=bt_size)
-                    signal_type_display = " SHORT SELL"
-
-                # Print entry confirmation
-                if self.p.print_signals:
+                # --- LIVE TRADING SIGNAL vs BACKTESTING ORDER ---
+                if self.p.live_trading:
+                    # In live mode, put a signal on the queue instead of placing an order
+                    if self.p.signal_queue is not None:
+                        signal = {
+                            'direction': signal_direction,
+                            'size': bt_size,
+                            'stop_loss': self.stop_level,
+                            'take_profit': self.take_level
+                        }
+                        self.p.signal_queue.put(signal)
+                        print(f"📬 SIGNAL EMITTED: {signal_direction} size={bt_size} SL={self.stop_level:.5f} TP={self.take_level:.5f}")
+                else:
+                    # In backtest mode, place the order as usual
                     if signal_direction == 'LONG':
-                        rr = (self.take_level - entry_price) / (entry_price - self.stop_level) if (
-                                                                                                          entry_price - self.stop_level) > 0 else float(
-                            'nan')
-                    else:  # SHORT
-                        rr = (entry_price - self.take_level) / (self.stop_level - entry_price) if (
-                                                                                                          self.stop_level - entry_price) > 0 else float(
-                            'nan')
+                        self.order = self.buy(size=bt_size)
+                        signal_type_display = " LONG BUY"
+                    elif signal_direction == 'SHORT':
+                        self.order = self.sell(size=bt_size)
+                        signal_type_display = " SHORT SELL"
 
-                    print(
-                        f"🎯 VOLATILITY EXPANSION ENTRY{signal_type_display} {dt:%Y-%m-%d %H:%M} price={entry_price:.5f} size={bt_size} SL={self.stop_level:.5f} TP={self.take_level:.5f} RR={rr:.2f}")
+                    # Print entry confirmation for backtesting
+                    if self.p.print_signals:
+                        if signal_direction == 'LONG':
+                            rr = (self.take_level - entry_price) / (entry_price - self.stop_level) if (
+                                                                                                              entry_price - self.stop_level) > 0 else float(
+                                'nan')
+                        else:  # SHORT
+                            rr = (entry_price - self.take_level) / (self.stop_level - entry_price) if (
+                                                                                                              self.stop_level - entry_price) > 0 else float(
+                                'nan')
+
+                        print(
+                            f"🎯 VOLATILITY EXPANSION ENTRY{signal_type_display} {dt:%Y-%m-%d %H:%M} price={entry_price:.5f} size={bt_size} SL={self.stop_level:.5f} TP={self.take_level:.5f} RR={rr:.2f}")
 
                 # ✅ CRITICAL FIX: Calculate ATR change for trade recording
                 # Get current ATR and compare with signal detection ATR if available
@@ -2987,7 +3009,7 @@ class ITradingStrategy(bt.Strategy):
 
         # Backtrader portfolio value
         final_value = self.broker.get_value()
-        starting_cash = 100000.0  # Known starting value
+        starting_cash = 10000.0  # Known starting value
         total_pnl = final_value - starting_cash
 
         print(f"Trades: {self.trades} Wins: {self.wins} Losses: {self.losses} WinRate: {wr:.2f}% PF: {pf:.2f}")
