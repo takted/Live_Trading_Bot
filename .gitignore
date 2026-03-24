@@ -24,6 +24,7 @@ mt5_*.log
 account_*.json
 trading_report_*.txt
 temp_reports/
+reports/
 
 # Configuration backups that might contain credentials
 # config/

@@ -1048,9 +1048,9 @@ class ITradingStrategy(bt.Strategy):
 
         if EXPORT_TRADE_REPORTS or TRADE_REPORT_ENABLED:
             try:
-                # Create temp_reports directory if it doesn't exist
+                # Create reports directory if it doesn't exist
                 from pathlib import Path
-                report_dir = Path("temp_reports")
+                report_dir = Path(__file__).resolve().parent.parent / 'reports'
                 report_dir.mkdir(exist_ok=True)
 
                 # Extract asset name from data filename or instrument parameter
