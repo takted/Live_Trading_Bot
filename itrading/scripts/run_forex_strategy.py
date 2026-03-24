@@ -134,7 +134,8 @@ class ForexStrategyRunner:
         parent.orderType = "MKT"
         parent.totalQuantity = quantity
         parent.tif = "GTC"
-        parent.transmit = True # Set to True to override presets
+        parent.usePriceMgmtAlgo = False
+        parent.transmit = True
 
         # Stop Loss Order
         stop_loss_order = Order()
@@ -145,7 +146,8 @@ class ForexStrategyRunner:
         stop_loss_order.totalQuantity = quantity
         stop_loss_order.tif = "GTC"
         stop_loss_order.parentId = parent.orderId
-        stop_loss_order.transmit = True # Set to True to override presets
+        stop_loss_order.usePriceMgmtAlgo = False
+        stop_loss_order.transmit = True
 
         # Take Profit Order
         take_profit_order = Order()
@@ -156,7 +158,8 @@ class ForexStrategyRunner:
         take_profit_order.totalQuantity = quantity
         take_profit_order.tif = "GTC"
         take_profit_order.parentId = parent.orderId
-        take_profit_order.transmit = True # Set to True to override presets
+        take_profit_order.usePriceMgmtAlgo = False
+        take_profit_order.transmit = True
 
         self.logger.info(f"Placing bracket order: {action} {quantity} {symbol} SL: {stop_loss_price} TP: {take_profit_price}")
         self.ib_connection.client.placeOrder(parent.orderId, contract, parent)

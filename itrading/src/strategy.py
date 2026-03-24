@@ -909,11 +909,11 @@ class ITradingStrategy(bt.Strategy):
             'AUDUSD': {  # Australian Dollar vs US Dollar
                 'base_currency': 'AUD',
                 'quote_currency': 'USD',
-                'pip_value': 0.01,  # 1 tick = $0.01
-                'pip_decimal_places': 2,
-                'lot_size': 100,  # 100 ounces
-                'margin_required': 5.0,  # 5.0% (20:1 leverage)
-                'typical_spread': 0.3
+                'pip_value': 0.0001,
+                'pip_decimal_places': 5,
+                'lot_size': 100000,  # Standard Forex lot size
+                'margin_required': 3.33,
+                'typical_spread': 2.2
             }
         }
 
@@ -939,7 +939,7 @@ class ITradingStrategy(bt.Strategy):
         print(f"CONFIGURED: {instrument_name}")
         print(f"Forex Config: {self.p.forex_base_currency}/{self.p.forex_quote_currency}")
         print(
-            f"Tick Value: {self.p.forex_pip_value} | Lot Size: {self.p.forex_lot_size:,} oz | Margin: {self.p.forex_margin_required}%")
+            f"Tick Value: {self.p.forex_pip_value} | Lot Size: {self.p.forex_lot_size:,} | Margin: {self.p.forex_margin_required}%")
 
     def __init__(self):
         d = self.data
