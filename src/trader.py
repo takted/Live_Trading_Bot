@@ -14,9 +14,9 @@ import backtrader as bt
 
 from itrading import config
 from itrading import ITradingConnection
-from itrading.lib.logger import ITradingLogger
-from itrading.lib.position import ITradingPositionManager
-from itrading.lib.constants import SecurityType
+from itrading.src.logger import ITradingLogger
+from itrading.src.position import ITradingPositionManager
+from itrading.src.constants import SecurityType
 
 def print_contract_details(contract: Contract) -> None:
     """Prints a formatted list of contract details."""

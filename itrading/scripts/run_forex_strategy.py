@@ -11,10 +11,10 @@ from datetime import datetime
 # Add project root to path to allow importing 'itrading'
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
-from itrading.lib import ITradingConnection
-from itrading.lib import ITradingLogger
-from itrading.lib import SecurityType
-from itrading.lib import ITradingStrategy
+from itrading.src import ITradingConnection
+from itrading.src import ITradingLogger
+from itrading.src import SecurityType
+from itrading.src import ITradingStrategy
 
 def print_contract_details(contract: Contract) -> None:
     """Prints a formatted list of contract details."""
