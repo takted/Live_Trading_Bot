@@ -447,7 +447,7 @@ class SunriseMT5Trader:
         return True
     
     def start_trading(self):
-        """Start the main trading loop"""
+        """Start the scripts trading loop"""
         if not self.initialize():
             return
         

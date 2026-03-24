@@ -9,12 +9,12 @@ from ibapi.contract import Contract
 from datetime import datetime
 
 # Add project root to path to allow importing 'itrading'
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
-from itrading.connection import ITradingConnection
-from itrading.logger import ITradingLogger
-from itrading.constants import SecurityType
-from itrading.strategy import ITradingStrategy
+from itrading.lib import ITradingConnection
+from itrading.lib import ITradingLogger
+from itrading.lib import SecurityType
+from itrading.lib import ITradingStrategy
 
 def print_contract_details(contract: Contract) -> None:
     """Prints a formatted list of contract details."""
@@ -212,7 +212,7 @@ class ForexStrategyRunner:
 
 if __name__ == '__main__':
     # Load parameters from JSON file
-    params_path = Path(__file__).resolve().parent / 'parameters.json'
+    params_path = Path(__file__).resolve().parent.parent / 'config' / 'parameters.json'
     with open(params_path, 'r') as f:
         params = json.load(f)
 

@@ -296,7 +296,7 @@ class AdvancedMT5TradingMonitorGUI:
         
     def setup_gui(self):
         """Initialize the advanced GUI components"""
-        # Create main paned window
+        # Create scripts paned window
         main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         main_paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
@@ -1044,7 +1044,7 @@ class AdvancedMT5TradingMonitorGUI:
                 self.terminal_log("[OK] Reconnection successful - Resuming monitoring", "SUCCESS", critical=True)
                 self.mt5_connected = True
                 self.reconnect_attempts = 0  # Reset counter on success
-                # Update GUI from main thread
+                # Update GUI from scripts thread
                 self.root.after(0, lambda: self.connection_status_label.config(text="Connected", foreground="green"))
                 return True
             else:

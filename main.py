@@ -1,4 +1,4 @@
-from itrading.trader import ITradingTrader
+from itrading import ITradingTrader
 
 if __name__ == '__main__':
     trader = ITradingTrader()

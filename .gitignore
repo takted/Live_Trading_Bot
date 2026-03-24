@@ -26,6 +26,7 @@ trading_report_*.txt
 temp_reports/
 
 # Configuration backups that might contain credentials
+# config/
 config/*.backup
 config/*.bak
 *.credentials
@@ -177,7 +178,7 @@ strategies/*.mq5
 
 # MT5 data and cache
 Bases/
-config/
+# config/
 History/
 logs/
 MQL5/

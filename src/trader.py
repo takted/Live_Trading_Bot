@@ -1,5 +1,5 @@
 """
-The main trading engine that connects strategies to Interactive Brokers.
+The scripts trading engine that connects strategies to Interactive Brokers.
 """
 import signal
 import time
@@ -12,11 +12,11 @@ import io
 from ibapi.contract import Contract
 import backtrader as bt
 
-from . import config
-from .connection import ITradingConnection
-from .logger import ITradingLogger
-from .position import ITradingPositionManager
-from .constants import SecurityType
+from itrading import config
+from itrading import ITradingConnection
+from itrading.lib.logger import ITradingLogger
+from itrading.lib.position import ITradingPositionManager
+from itrading.lib.constants import SecurityType
 
 def print_contract_details(contract: Contract) -> None:
     """Prints a formatted list of contract details."""

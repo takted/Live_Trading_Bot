@@ -2178,7 +2178,7 @@ class SunriseOgle(bt.Strategy):
 
         if order.status == order.Completed:
             # Determine if this is an entry or exit order
-            if order == self.order:  # This is our main entry order
+            if order == self.order:  # This is our scripts entry order
                 # Entry order completed
                 self.last_entry_price = order.executed.price
                 self.last_entry_bar = len(self)

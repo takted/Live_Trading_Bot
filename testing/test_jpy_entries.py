@@ -504,9 +504,9 @@ def main(dry_run: bool = True, symbol: str = None):
         if dry_run:
             print("\n✅ DRY RUN completed (no trades executed)")
             print("\nTo execute real trades, run:")
-            print("  main(dry_run=False)  # Both symbols")
-            print("  main(dry_run=False, symbol='EURJPY')  # Only EURJPY")
-            print("  main(dry_run=False, symbol='USDJPY')  # Only USDJPY")
+            print("  scripts(dry_run=False)  # Both symbols")
+            print("  scripts(dry_run=False, symbol='EURJPY')  # Only EURJPY")
+            print("  scripts(dry_run=False, symbol='USDJPY')  # Only USDJPY")
     
     finally:
         # Disconnect from MT5

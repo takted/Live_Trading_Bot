@@ -4,8 +4,8 @@ Main execution script for the ITrading application.
 import sys
 from time import sleep
 
-from itrading.setup import setup_ibkr_environment, create_ibkr_config_files, test_ibkr_connection
-from itrading.trader import ITradingTrader
+from itrading import setup_ibkr_environment, create_ibkr_config_files, test_ibkr_connection
+from itrading import ITradingTrader
 from itrading import config
 
 def main():
