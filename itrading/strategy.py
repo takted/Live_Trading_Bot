@@ -4,7 +4,7 @@ import math
 import json
 from pathlib import Path
 
-"""Advanced Sunrise Strategy - AUDUSD Trading System
+"""Advanced ITradinggStrategy - AUDUSD Trading System
 ==================================================
 AUDUSD VERSION: This is a specialized version optimized exclusively for AUDUSD (Australian Dollar vs USD) trading.
 Adapted from the original strategy with Australian Dollar forex-specific parameters and configurations.
@@ -1079,7 +1079,7 @@ class ITradingStrategy(bt.Strategy):
                 self.trade_report_file = open(report_path, 'w', encoding='utf-8')
 
                 # Write header
-                self.trade_report_file.write(f"=== SUNRISE STRATEGY TRADE REPORT ===\n")
+                self.trade_report_file.write(f"=== ITRADING STRATEGY TRADE REPORT ===\n")
                 self.trade_report_file.write(f"Asset: {asset_name}\n")
                 self.trade_report_file.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 self.trade_report_file.write(f"Data File: {self._data_filename}\n")
@@ -2987,7 +2987,7 @@ class ITradingStrategy(bt.Strategy):
                 self.limit_order = None
 
         # Enhanced summary calculation with debug stats
-        print("=== SUNRISE OGLE SUMMARY ===")
+        print("=== ITRADING SUMMARY ===")
 
         # Calculate metrics
         wr = (self.wins / self.trades * 100.0) if self.trades else 0.0
