@@ -205,7 +205,7 @@ class ForexStrategyRunner:
             self.logger.info(f"Requesting historical data for {symbol}...")
             self.ib_connection.client.historical_data.clear()
             self.ib_connection.client.historical_data_end_event.clear()
-            self.ib_connection.client.reqHistoricalData(4001, contract, "", "31 D", "5 mins", "MIDPOINT", 1, 2, False, [])
+            self.ib_connection.client.reqHistoricalData(4001, contract, "", "7 D", "5 mins", "MIDPOINT", 1, 2, False, [])
 
             if not self.ib_connection.client.historical_data_end_event.wait(timeout=145):
                 self.logger.warning(f"Timeout waiting for historical data for {symbol}.")

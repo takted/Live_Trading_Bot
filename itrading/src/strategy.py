@@ -2,6 +2,12 @@ from __future__ import annotations
 import backtrader as bt
 import math
 from pathlib import Path
+import sys
+
+# Add project root to path to allow importing 'itrading'
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from itrading.src import config
+
 
 """Advanced ITradinggStrategy - AUDUSD Trading System
 ==================================================
@@ -186,11 +192,6 @@ Trading involves substantial risk of loss. Past performance does not
 guarantee future results. Validate all logic and data quality before 
 using in any live or simulated trading environment.
 """
-import sys
-
-# Add project root to path to allow importing 'itrading'
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-
 # =============================================================
 # CONFIGURATION PARAMETERS - EASILY EDITABLE AT TOP OF FILE
 # =============================================================
@@ -753,67 +754,69 @@ class ITradingStrategy(bt.Strategy):
             return float('nan')
 
     def _calculate_forex_position_size(self, entry_price, stop_loss_price):
-        """Calculate optimal position size for forex trading with proper risk management.
-
-        Args:
-            entry_price: Entry price level
-            stop_loss_price: Stop loss price level
-
-        Returns:
-            tuple: (lot_size, contracts, margin_required, pip_risk, position_value)
+        """
+        Calculate position size, respecting exchange minimums and cash limits.
+        Prioritizes exchange minimum if it's within the cash limit.
         """
         if not self.p.use_forex_position_calc:
             return None, None, None, None, None
 
-        # Calculate risk in pips
+        account_equity = self.broker.get_value()
+
+        # 1. Define minimum exchange units for AUD.USD on IdealPro
+        min_exchange_units = 2500
+
+        # 2. Calculate maximum units allowed by the total cash limit (MAX_POSITION_SIZE)
+        max_position_value_usd = config.MAX_POSITION_SIZE * account_equity
+        if entry_price > 0:
+            max_units_by_value = int(max_position_value_usd / entry_price)
+        else:
+            max_units_by_value = 0
+
+        # 3. Determine the final order size
+        units = 0
+        if max_units_by_value >= min_exchange_units:
+            # We can afford the minimum size. Now, calculate size based on risk.
+            price_difference = abs(entry_price - stop_loss_price)
+            pip_risk = price_difference / self.p.forex_pip_value
+            risk_amount = account_equity * self.p.risk_percent
+            
+            if pip_risk > 0:
+                value_per_pip_per_unit = self.p.forex_pip_value
+                risk_per_unit = pip_risk * value_per_pip_per_unit
+                units_by_risk = int(risk_amount / risk_per_unit) if risk_per_unit > 0 else 0
+            else:
+                units_by_risk = 0
+
+            # The final size is the minimum of the risk-based size and the value-based size,
+            # but it must be at least the exchange minimum.
+            units = min(units_by_risk, max_units_by_value)
+            if units < min_exchange_units:
+                print(f"DEBUG_POSITION_SIZE: Risk-based size ({units}) is below exchange minimum ({min_exchange_units}). Adjusting to minimum.")
+                units = min_exchange_units
+        else:
+            print(f"DEBUG_POSITION_SIZE: Trade blocked. Not enough capital to meet minimum exchange size of {min_exchange_units}. Max affordable is {max_units_by_value}.")
+            return 0.0, 0, 0.0, 0.0, 0.0
+
+        # Final check to ensure we don't exceed the absolute max allowed by value
+        if units > max_units_by_value:
+             print(f"DEBUG_POSITION_SIZE: Sizing logic resulted in {units} which exceeds max by value ({max_units_by_value}). Capping.")
+             units = max_units_by_value
+        
+        # If after all that, the size is still less than the minimum, block it.
+        if units < min_exchange_units:
+            print(f"DEBUG_POSITION_SIZE: Final calculated size {units} is below exchange minimum {min_exchange_units}. Blocking trade.")
+            return 0.0, 0, 0.0, 0.0, 0.0
+
+        optimal_lots = units / self.p.forex_lot_size
+        position_value = units * entry_price
+        margin_required = position_value * (self.p.forex_margin_required / 100.0)
+        
+        # Recalculate pip_risk for the final size for logging/info purposes
         price_difference = abs(entry_price - stop_loss_price)
         pip_risk = price_difference / self.p.forex_pip_value
 
-        # Account equity and risk amount
-        account_equity = self.broker.get_value()
-        risk_amount = account_equity * self.p.risk_percent
-
-        # Calculate value per pip for AUDUSD
-        # For AUDUSD: 1 standard lot (100,000 AUD) = $10 per pip (0.0001 price move)
-
-        if self.p.forex_quote_currency == 'USD':
-            value_per_pip_per_lot = (self.p.forex_pip_value * self.p.forex_lot_size)
-        else:
-            # For AUDUSD, direct USD pricing
-            # Simplified: use $1 per tick for standard lot (100 oz)
-            value_per_pip_per_lot = 1.0
-
-        # Calculate optimal lot size
-        if pip_risk > 0:
-            optimal_lots = risk_amount / (pip_risk * value_per_pip_per_lot)
-            optimal_lots = max(self.p.forex_micro_lot_size,
-                               round(optimal_lots / self.p.forex_micro_lot_size) * self.p.forex_micro_lot_size)
-        else:
-            return None, None, None, None, None
-
-        # REMOVE RESTRICTIVE LIMITS: Let user control their own risk
-        # Only apply absolute minimum safety to prevent system errors
-
-        # Minimum position size check (very minimal)
-        min_lots = 0.01  # Minimum 0.01 lots
-        if optimal_lots < min_lots:
-            optimal_lots = min_lots
-
-        # Maximum absolute limit (very high - 500 lots)
-        max_absolute_lots = 500.0
-        if optimal_lots > max_absolute_lots:
-            optimal_lots = max_absolute_lots
-
-        # Calculate position value and margin required
-        position_value = optimal_lots * self.p.forex_lot_size * entry_price
-        margin_required = position_value * (self.p.forex_margin_required / 100.0)
-
-        # Convert to Backtrader contracts for XAUUSD
-        # For XAUUSD: Use lot size directly (100 oz standard lot)
-        contracts = max(1, int(optimal_lots * 100))  # Scale lots to reasonable contract size
-        print(f"DEBUG_POSITION_SIZE: optimal_lots={optimal_lots:.2f}, contracts={contracts}")
-
-        return optimal_lots, contracts, margin_required, pip_risk, position_value
+        return optimal_lots, units, margin_required, pip_risk, position_value
 
     def _format_forex_trade_info(self, entry_price, stop_loss, take_profit, lot_size, pip_risk, position_value,
                                  margin_required):
@@ -1176,7 +1179,7 @@ class ITradingStrategy(bt.Strategy):
         self.window_bottom_limit = None
         self.window_expiry_bar = None
         self.window_breakout_level = None
-        # 🔧 CRITICAL FIX: Reset stored trigger candle
+        # 🔧 CRITICAL FIX: Store original signal trigger candle for validation
         self.signal_trigger_candle = None
 
     def _phase1_scan_for_signal(self):
@@ -1319,12 +1322,6 @@ class ITradingStrategy(bt.Strategy):
                     # ✅ CRITICAL FIX: Store ATR when SHORT signal is detected
                     current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                     self.signal_detection_atr = current_atr
-                    if self.p.print_signals:
-                        print(f"SHORT SIGNAL DETECTED - {self.data.datetime.datetime(0)}:")
-                        print(
-                            f"   Previous bearish candle: close[-1]={self.data.close[-1]:.5f} < open[-1]={self.data.open[-1]:.5f}")
-                        print(f"   All filters passed, proceeding to ARMED_SHORT state")
-                        print(f"   Signal detection ATR: {current_atr:.6f}")
                     return 'SHORT'
 
         return None
@@ -1825,29 +1822,20 @@ class ITradingStrategy(bt.Strategy):
 
                 # Position sizing calculation
                 if self.p.enable_risk_sizing:
-                    if signal_direction == 'LONG':
-                        raw_risk = entry_price - self.stop_level
-                    else:  # SHORT
-                        raw_risk = self.stop_level - entry_price
-
-                    if raw_risk <= 0:
+                    # Call the helper function to get the correct unit size
+                    optimal_lots, units, _, _, _ = self._calculate_forex_position_size(entry_price, self.stop_level)
+                    
+                    if units is None or units <= 0:
                         self._reset_entry_state()
                         return
-                    equity = self.broker.get_value()
-                    risk_val = equity * self.p.risk_percent
-                    risk_per_contract = raw_risk * self.p.contract_size
-                    if risk_per_contract <= 0:
-                        self._reset_entry_state()
-                        return
-                    contracts = max(int(risk_val / risk_per_contract), 1)
+                    bt_size = units
                 else:
-                    contracts = int(self.p.size)
+                    # If risk sizing is disabled, use the default size parameter multiplied by lot size
+                    bt_size = int(self.p.size * self.p.forex_lot_size)
 
-                if contracts <= 0:
+                if bt_size <= 0:
                     self._reset_entry_state()
                     return
-
-                bt_size = contracts * self.p.contract_size
 
                 # --- LIVE TRADING SIGNAL vs BACKTESTING ORDER ---
                 if self.p.live_trading:
@@ -1968,7 +1956,7 @@ class ITradingStrategy(bt.Strategy):
             if not candle_direction_ok:
                 return False
 
-        # 2. EMA crossover check (ANY of the three) - ABOVE for LONG
+        # 2. EMA crossover check (ANY of the three)
         cross_fast = self._cross_above(self.ema_confirm, self.ema_fast)
         cross_medium = self._cross_above(self.ema_confirm, self.ema_medium)
         cross_slow = self._cross_above(self.ema_confirm, self.ema_slow)
@@ -3047,7 +3035,7 @@ class ITradingStrategy(bt.Strategy):
                 self.broker.cancel(self.stop_order)
                 self.stop_order = None
             if self.limit_order:
-                self.broker.cancel(self.limit_order)
+                self.cancel(self.limit_order)
                 self.limit_order = None
             print("DEBUG: All pending orders cancelled")
         except Exception as e:
