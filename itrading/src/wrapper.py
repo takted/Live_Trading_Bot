@@ -1,6 +1,7 @@
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
 from ibapi.common import BarData
+from ibapi.contract import Contract
 
 import threading
 from itrading.src.logger import ITradingLogger
@@ -17,16 +18,16 @@ class ITradingWrapper(EWrapper, EClient):
         self.connection_acknowledged = threading.Event()
         self.account_summary_end_event = threading.Event()
         self.historical_data_end_event = threading.Event()
+        self.position_end_event = threading.Event() # New event for positions
         self.historical_data = []
+        self.positions = [] # New list to store positions
 
     def get_next_order_id(self) -> int:
         """Gets the next valid order ID and increments it."""
         if self.next_valid_id is None:
             self.logger.error("Next valid order ID is not set. Cannot place order.")
-            # Request the next valid ID from TWS. This is an async call.
-            # A proper implementation would wait for the response.
             self.reqIds(-1)
-            return -1 # Indicate failure
+            return -1
         
         order_id = self.next_valid_id
         self.next_valid_id += 1
@@ -37,7 +38,7 @@ class ITradingWrapper(EWrapper, EClient):
         super().nextValidId(orderId)
         self.next_valid_id = orderId
         self.logger.info(f"IBKR connection established. Next valid ID: {orderId}")
-        self.connection_acknowledged.set() # Signal that connection is ready
+        self.connection_acknowledged.set()
 
     def connectAck(self):
         """Receives connection acknowledgement and server version."""
@@ -47,9 +48,7 @@ class ITradingWrapper(EWrapper, EClient):
     def accountSummary(self, reqId: int, account: str, tag: str, value: str, currency: str):
         """Receives account summary."""
         super().accountSummary(reqId, account, tag, value, currency)
-        # Store value and currency for relevant tags
         self.account_summary[tag] = {'value': value, 'currency': currency}
-        # For the 'Currency' tag itself, just store the value for backward compatibility
         if tag == 'Currency':
             self.account_summary[tag] = value
 
@@ -77,10 +76,25 @@ class ITradingWrapper(EWrapper, EClient):
         super().historicalDataEnd(reqId, start, end)
         self.historical_data_end_event.set()
 
+    def position(self, account: str, contract: Contract, position: float, avgCost: float):
+        """Callback for receiving position data."""
+        super().position(account, contract, position, avgCost)
+        self.positions.append({
+            'account': account,
+            'symbol': contract.symbol,
+            'secType': contract.secType,
+            'currency': contract.currency,
+            'position': position,
+            'avgCost': avgCost
+        })
+
+    def positionEnd(self):
+        """Signal that position data request is complete."""
+        super().positionEnd()
+        self.position_end_event.set()
+
     def error(self, *args):
         """Handles errors from TWS."""
-        # The error callback signature has changed over time.
-        # This implementation handles different signatures.
         if len(args) == 5:
             reqId, _, errorCode, errorString, _ = args
         elif len(args) == 4:
@@ -88,15 +102,13 @@ class ITradingWrapper(EWrapper, EClient):
         elif len(args) == 3:
             reqId, errorCode, errorString = args
         else:
-            # Fallback for unknown signatures
             self.logger.error(f"Unhandled IB error with {len(args)} arguments: {args}")
             return
 
-        # Error codes indicating connection issues
         if reqId == -1 and errorCode in [2104, 2106, 2158]:
              self.logger.info(f"IBKR Info: {errorString}")
-        elif errorCode in [502, 504, 1100, 2105]: # Connection errors
+        elif errorCode in [502, 504, 1100, 2105]:
             self.logger.error(f"IBKR Connection Error: {errorCode} - {errorString}")
-            self.connection_acknowledged.set() # Unblock connection attempt
+            self.connection_acknowledged.set()
         else:
             self.logger.error(f"IBKR Error: {errorCode} - {errorString}")

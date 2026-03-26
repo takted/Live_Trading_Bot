@@ -35,15 +35,18 @@ def print_contract_details(contract: Contract) -> None:
     print("------------------------\n")
 
 class SLTPObserver(bt.Observer):
-    lines = ('sl','tp',); plotinfo = dict(plot=True, subplot=False)
+    lines = ('sl', 'tp',);
+    plotinfo = dict(plot=True, subplot=False)
     plotlines = dict(sl=dict(color='red', ls='--'), tp=dict(color='green', ls='--'))
+
     def next(self):
         strat = self._owner
         if strat.position:
             self.lines.sl[0] = strat.stop_level if strat.stop_level else float('nan')
             self.lines.tp[0] = strat.take_level if strat.take_level else float('nan')
         else:
-            self.lines.sl[0] = float('nan'); self.lines.tp[0] = float('nan')
+            self.lines.sl[0] = float('nan');
+            self.lines.tp[0] = float('nan')
 
 class ForexStrategyRunner:
     def __init__(self, params, logger):
@@ -86,18 +89,32 @@ class ForexStrategyRunner:
 
         try:
             while self.running and not self.emergency_stop:
-                # This will now run the backtrader engine for one cycle to get a signal
-                self.execute_strategy_run(live_trading=True)
+                # 1. Check for existing positions
+                positions = self.ib_connection.get_positions()
+                symbol = self.params['FOREX_INSTRUMENT']
+                instrument_symbol = symbol[:3]
 
-                # Check for a signal from the strategy
-                try:
-                    signal = self.signal_queue.get(block=False)
-                    self.logger.info(f"Signal received: {signal}")
-                    self.execute_live_trade(signal)
-                except queue.Empty:
-                    # No signal, continue
-                    pass
-                
+                has_position = any(
+                    p['symbol'] == instrument_symbol and p['position'] != 0
+                    for p in positions
+                )
+
+                if has_position:
+                    self.logger.info(f"Already in a position for {symbol}. Skipping signal generation.")
+                else:
+                    # 2. No position, so run strategy to look for a new signal
+                    self.logger.info(f"No open position for {symbol}. Looking for a new signal...")
+                    self.execute_strategy_run(live_trading=True)
+
+                    # 3. Check for a signal from the strategy
+                    try:
+                        signal = self.signal_queue.get(block=False)
+                        self.logger.info(f"Signal received: {signal}")
+                        self.execute_live_trade(signal)
+                    except queue.Empty:
+                        # No signal, continue
+                        self.logger.info("No signal generated in this cycle.")
+
                 if not self.emergency_stop:
                     self.logger.info(f"Waiting for {self.params['SIGNAL_CHECK_INTERVAL']} seconds before next run...")
                     time.sleep(self.params['SIGNAL_CHECK_INTERVAL'])
@@ -123,19 +140,19 @@ class ForexStrategyRunner:
         price_precision = self.params.get('PRICE_PRECISION', 5)
         stop_loss_price = round(signal['stop_loss'], price_precision)
         take_profit_price = round(signal['take_profit'], price_precision)
-        
+
         action = "BUY" if signal['direction'] == 'LONG' else 'SELL'
-        quantity = signal['size']
+        quantity = int(signal['size'])  # Explicitly cast to int for totalQuantity
 
         # Parent Order
         parent = Order()
         parent.orderId = self.ib_connection.client.get_next_order_id()
         parent.action = action
         parent.orderType = "MKT"
-        parent.totalQuantity = quantity
+        parent.totalQuantity = quantity  # Use int quantity
         parent.tif = "GTC"
-        parent.usePriceMgmtAlgo = False
-        parent.transmit = True
+        parent.usePriceMgmtAlgo = False  # Explicitly disable TWS presets/algos
+        parent.transmit = False
 
         # Stop Loss Order
         stop_loss_order = Order()
@@ -143,11 +160,11 @@ class ForexStrategyRunner:
         stop_loss_order.action = "SELL" if action == "BUY" else "BUY"
         stop_loss_order.orderType = "STP"
         stop_loss_order.auxPrice = stop_loss_price
-        stop_loss_order.totalQuantity = quantity
+        stop_loss_order.totalQuantity = quantity  # Use int quantity
         stop_loss_order.tif = "GTC"
         stop_loss_order.parentId = parent.orderId
-        stop_loss_order.usePriceMgmtAlgo = False
-        stop_loss_order.transmit = True
+        stop_loss_order.usePriceMgmtAlgo = False  # Explicitly disable TWS presets/algos
+        stop_loss_order.transmit = False
 
         # Take Profit Order
         take_profit_order = Order()
@@ -155,17 +172,17 @@ class ForexStrategyRunner:
         take_profit_order.action = "SELL" if action == "BUY" else "BUY"
         take_profit_order.orderType = "LMT"
         take_profit_order.lmtPrice = take_profit_price
-        take_profit_order.totalQuantity = quantity
+        take_profit_order.totalQuantity = quantity  # Use int quantity
         take_profit_order.tif = "GTC"
         take_profit_order.parentId = parent.orderId
-        take_profit_order.usePriceMgmtAlgo = False
+        take_profit_order.usePriceMgmtAlgo = False  # Explicitly disable TWS presets/algos
         take_profit_order.transmit = True
 
-        self.logger.info(f"Placing bracket order: {action} {quantity} {symbol} SL: {stop_loss_price} TP: {take_profit_price}")
+        self.logger.info(
+            f"Placing bracket order: {action} {quantity} {symbol} SL: {stop_loss_price} TP: {take_profit_price}")
         self.ib_connection.client.placeOrder(parent.orderId, contract, parent)
         self.ib_connection.client.placeOrder(stop_loss_order.orderId, contract, stop_loss_order)
         self.ib_connection.client.placeOrder(take_profit_order.orderId, contract, take_profit_order)
-
 
     def run_single_strategy(self):
         self.ib_connection = ITradingConnection(self.logger)
@@ -205,7 +222,8 @@ class ForexStrategyRunner:
             self.logger.info(f"Requesting historical data for {symbol}...")
             self.ib_connection.client.historical_data.clear()
             self.ib_connection.client.historical_data_end_event.clear()
-            self.ib_connection.client.reqHistoricalData(4001, contract, "", "7 D", "5 mins", "MIDPOINT", 1, 2, False, [])
+            self.ib_connection.client.reqHistoricalData(4001, contract, "", "31 D", "5 mins", "MIDPOINT", 1, 2, False,
+                                                        [])
 
             if not self.ib_connection.client.historical_data_end_event.wait(timeout=145):
                 self.logger.warning(f"Timeout waiting for historical data for {symbol}.")
@@ -217,7 +235,8 @@ class ForexStrategyRunner:
                 print("Last 11 bars:")
                 for bar in bars[-11:]:
                     dt_object = datetime.fromtimestamp(int(bar['date']))
-                    print(f"{dt_object.strftime('%Y-%m-%d %H:%M:%S')} | O={bar['open']} H={bar['high']} L={bar['low']} C={bar['close']} V={bar['volume']}")
+                    print(
+                        f"{dt_object.strftime('%Y-%m-%d %H:%M:%S')} | O={bar['open']} H={bar['high']} L={bar['low']} C={bar['close']} V={bar['volume']}")
             print_contract_details(contract)
 
             if not bars:
@@ -241,14 +260,14 @@ class ForexStrategyRunner:
             if df.empty:
                 self.logger.error("DataFrame is empty after date filtering. Check FROMDATE and TODATE.")
                 return None
-                
+
             data = bt.feeds.PandasData(dataname=df)
 
             cerebro = bt.Cerebro(stdstats=False)
             cerebro.adddata(data)
             cerebro.broker.setcash(self.params['STARTING_CASH'])
             cerebro.broker.setcommission(leverage=30.0)
-            
+
             strat_kwargs = {
                 'instrument_name': symbol,
                 'live_trading': live_trading,
@@ -258,23 +277,24 @@ class ForexStrategyRunner:
                 strat_kwargs['long_enabled'] = long_only
             if short_only is not None:
                 strat_kwargs['short_enabled'] = short_only
-            
+
             cerebro.addstrategy(ITradingStrategy, **strat_kwargs)
-            
+
             cerebro.addobserver(bt.observers.BuySell, barplot=False)
             cerebro.addobserver(bt.observers.Value)
             cerebro.addobserver(SLTPObserver)
 
-            print(f"=== ITradingStrategy === (from {df.index.min().strftime('%Y-%m-%d')} to {df.index.max().strftime('%Y-%m-%d')})")
+            print(
+                f"=== ITradingStrategy === (from {df.index.min().strftime('%Y-%m-%d')} to {df.index.max().strftime('%Y-%m-%d')})")
 
             results = cerebro.run()
             final_value = cerebro.broker.getvalue()
-            
+
             print(f"Final Value: {final_value:,.2f}")
 
             if self.params.get('ENABLE_PLOT', False) and not self.params.get('RUN_CONTINUOUSLY', False):
                 cerebro.plot(style='candlestick')
-            
+
             return results
         except Exception as e:
             self.logger.error(f"An error occurred during strategy execution: {e}", exc_info=True)
@@ -282,7 +302,7 @@ class ForexStrategyRunner:
 
     def run_dual_strategy(self):
         self.logger.info("Running DUAL CEREBRO mode...")
-        
+
         self.ib_connection = ITradingConnection(self.logger)
         success, message = self.ib_connection.connect()
         if not success:
@@ -302,7 +322,7 @@ class ForexStrategyRunner:
                 long_pnl = long_results[0].broker.getvalue() - self.params['STARTING_CASH']
                 short_pnl = short_results[0].broker.getvalue() - self.params['STARTING_CASH']
                 combined_pnl = long_pnl + short_pnl
-                
+
                 print("\n=== DUAL CEREBRO SUMMARY ===")
                 print(f" LONG-ONLY PnL: {long_pnl:,.2f}")
                 print(f" SHORT-ONLY PnL: {short_pnl:,.2f}")

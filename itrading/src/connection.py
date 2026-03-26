@@ -3,7 +3,7 @@ Handles the connection to Interactive Brokers TWS/Gateway.
 """
 import threading
 import json
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 
 from itrading.src import config
 from itrading.src.logger import ITradingLogger
@@ -106,6 +106,23 @@ class ITradingConnection:
             return False, "Safety Check Failed: Live account detected."
 
         return True, "Connection successful."
+
+    def get_positions(self) -> List[Dict]:
+        """Request and retrieve current account positions."""
+        if not self.client or not self.connected:
+            self.logger.error("Not connected to IBKR. Cannot get positions.")
+            return []
+
+        self.client.positions.clear()
+        self.client.position_end_event.clear()
+        self.client.reqPositions()
+        
+        if not self.client.position_end_event.wait(timeout=10):
+            self.logger.warning("Timeout waiting for position data.")
+            self.client.cancelPositions()
+            return []
+        
+        return self.client.positions
 
     def disconnect(self):
         """Disconnect from IBKR."""
