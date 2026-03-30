@@ -3,6 +3,7 @@ import backtrader as bt
 import math
 from pathlib import Path
 import sys
+from datetime import datetime, timedelta
 
 # Add project root to path to allow importing 'itrading'
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -329,6 +330,7 @@ class ITradingStrategy(bt.Strategy):
         # === LIVE TRADING / SIGNALING ===
         live_trading=False, # Set to True for live mode to generate signals instead of orders
         signal_queue=None, # Queue for passing signals to the runner
+        current_utc_time=None, # The real-world time for freshness check
 
         # === TECHNICAL INDICATORS ===
         ema_fast_length=18,  # Fast EMA period for trend detection #14
@@ -424,7 +426,7 @@ class ITradingStrategy(bt.Strategy):
         # Bars to wait for breakdown after pullback (short entries)
 
         # === TIME RANGE FILTER ===
-        use_time_range_filter=USE_TIME_RANGE_FILTER,  # Enable time-based entry filtering
+        use_time_range_filter=USE_TIME_RANGE_FILTER,  # ENABLED: Time filter for complete analysis
         entry_start_hour=ENTRY_START_HOUR,  # Start hour for entry window (UTC)
         entry_start_minute=ENTRY_START_MINUTE,  # Start minute for entry window (UTC)
         entry_end_hour=ENTRY_END_HOUR,  # End hour for entry window (UTC)
@@ -1048,6 +1050,11 @@ class ITradingStrategy(bt.Strategy):
         # Initialize trade reporting
         self._init_trade_reporting()
 
+    def start(self):
+        """Called once before the strategy starts."""
+        if self.p.live_trading:
+            self.data_len = len(self.data)
+
     def _init_trade_reporting(self):
         """Initialize trade reporting functionality"""
         self.trade_reports = []  # Store trade details for export
@@ -1179,7 +1186,7 @@ class ITradingStrategy(bt.Strategy):
         self.window_bottom_limit = None
         self.window_expiry_bar = None
         self.window_breakout_level = None
-        # 🔧 CRITICAL FIX: Store original signal trigger candle for validation
+        # 🔧 CRITICAL FIX: Reset stored trigger candle
         self.signal_trigger_candle = None
 
     def _phase1_scan_for_signal(self):
@@ -1495,6 +1502,15 @@ class ITradingStrategy(bt.Strategy):
 
     def next(self):
         """Main strategy logic using volatility expansion channel entry system with 4-phase state machine"""
+        # --- FIX for Live Trading: Only process the most recent bar ---
+        if self.p.live_tradingp.live_trading:
+            bar_time = self.data.datetime.datetime(0)
+            # Allow a small buffer (e.g., 15 minutes) for data latency
+            if self.p.current_utc_time and (self.p.current_utc_time - bar_time) > timedelta(minutes=15):
+                if self.p.verbose_debug:
+                    print(f"DEBUG: Skipping stale bar {bar_time} (current: {self.p.current_utc_time})")
+                return  # Do not process historical bars in live mode, only use them for indicator warmup
+
         # In live mode, do not execute logic if there is already a position.
         # The runner is responsible for managing the single live position.
         if self.p.live_trading and self.position:
@@ -2303,7 +2319,7 @@ class ITradingStrategy(bt.Strategy):
                     temp_signal_detection_atr = self.signal_detection_atr
                     temp_entry_atr_increment = self.entry_atr_increment
                     print(
-                        f"🔍 DEBUG LONG: Before reset - signal_detection_atr={temp_signal_detection_atr}, entry_atr_increment={temp_entry_atr_increment}")  # DEBUG
+                        f"🔍 DEBUG SHORT: Before reset - signal_detection_atr={temp_signal_detection_atr}, entry_atr_increment={temp_entry_atr_increment}")  # DEBUG
 
                     # Reset state machine and trigger entry
                     self._reset_pullback_state()
@@ -2312,7 +2328,7 @@ class ITradingStrategy(bt.Strategy):
                     self.entry_signal_detection_atr = temp_signal_detection_atr
                     self.entry_atr_increment = temp_entry_atr_increment
                     print(
-                        f"🔍 DEBUG LONG: After restore - entry_signal_detection_atr={self.entry_signal_detection_atr}, entry_atr_increment={self.entry_atr_increment}")  # DEBUG
+                        f"🔍 DEBUG SHORT: After restore - entry_signal_detection_atr={self.entry_signal_detection_atr}, entry_atr_increment={self.entry_atr_increment}")  # DEBUG
 
                     return True
             return False
@@ -3035,7 +3051,7 @@ class ITradingStrategy(bt.Strategy):
                 self.broker.cancel(self.stop_order)
                 self.stop_order = None
             if self.limit_order:
-                self.cancel(self.limit_order)
+                self.broker.cancel(self.limit_order)
                 self.limit_order = None
             print("DEBUG: All pending orders cancelled")
         except Exception as e:

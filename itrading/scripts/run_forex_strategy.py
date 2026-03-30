@@ -18,6 +18,7 @@ from itrading.src import ITradingLogger
 from itrading.src import SecurityType
 from itrading.src import ITradingStrategy
 
+
 def print_contract_details(contract: Contract) -> None:
     """Prints a formatted list of contract details."""
     print("\n--- Contract Details ---")
@@ -34,6 +35,7 @@ def print_contract_details(contract: Contract) -> None:
             print(f"{key:<20} {value}")
     print("------------------------\n")
 
+
 class SLTPObserver(bt.Observer):
     lines = ('sl', 'tp',);
     plotinfo = dict(plot=True, subplot=False)
@@ -47,6 +49,7 @@ class SLTPObserver(bt.Observer):
         else:
             self.lines.sl[0] = float('nan');
             self.lines.tp[0] = float('nan')
+
 
 class ForexStrategyRunner:
     def __init__(self, params, logger):
@@ -142,14 +145,14 @@ class ForexStrategyRunner:
         take_profit_price = round(signal['take_profit'], price_precision)
 
         action = "BUY" if signal['direction'] == 'LONG' else 'SELL'
-        quantity = int(signal['size'])  # Explicitly cast to int for totalQuantity
+        quantity = float(signal['size'])  # Explicitly cast to float for totalQuantity
 
         # Parent Order
         parent = Order()
         parent.orderId = self.ib_connection.client.get_next_order_id()
         parent.action = action
         parent.orderType = "MKT"
-        parent.totalQuantity = quantity  # Use int quantity
+        parent.totalQuantity = quantity  # Use float quantity
         parent.tif = "GTC"
         parent.usePriceMgmtAlgo = False  # Explicitly disable TWS presets/algos
         parent.transmit = False
@@ -160,7 +163,7 @@ class ForexStrategyRunner:
         stop_loss_order.action = "SELL" if action == "BUY" else "BUY"
         stop_loss_order.orderType = "STP"
         stop_loss_order.auxPrice = stop_loss_price
-        stop_loss_order.totalQuantity = quantity  # Use int quantity
+        stop_loss_order.totalQuantity = quantity  # Use float quantity
         stop_loss_order.tif = "GTC"
         stop_loss_order.parentId = parent.orderId
         stop_loss_order.usePriceMgmtAlgo = False  # Explicitly disable TWS presets/algos
@@ -172,7 +175,7 @@ class ForexStrategyRunner:
         take_profit_order.action = "SELL" if action == "BUY" else "BUY"
         take_profit_order.orderType = "LMT"
         take_profit_order.lmtPrice = take_profit_price
-        take_profit_order.totalQuantity = quantity  # Use int quantity
+        take_profit_order.totalQuantity = quantity  # Use float quantity
         take_profit_order.tif = "GTC"
         take_profit_order.parentId = parent.orderId
         take_profit_order.usePriceMgmtAlgo = False  # Explicitly disable TWS presets/algos
@@ -222,7 +225,7 @@ class ForexStrategyRunner:
             self.logger.info(f"Requesting historical data for {symbol}...")
             self.ib_connection.client.historical_data.clear()
             self.ib_connection.client.historical_data_end_event.clear()
-            self.ib_connection.client.reqHistoricalData(4001, contract, "", "7 D", "5 mins", "MIDPOINT", 1, 2, False,
+            self.ib_connection.client.reqHistoricalData(4001, contract, "", "3 D", "5 mins", "MIDPOINT", 1, 2, False,
                                                         [])
 
             if not self.ib_connection.client.historical_data_end_event.wait(timeout=145):
@@ -231,6 +234,14 @@ class ForexStrategyRunner:
 
             bars = self.ib_connection.client.historical_data
             self.logger.info(f"Successfully received {len(bars)} historical bars for {symbol}.")
+
+            # Add a guard clause to ensure enough data is available
+            required_bars = 40
+            if len(bars) < required_bars:
+                self.logger.warning(
+                    f"Insufficient historical data: received {len(bars)} bars, but require at least {required_bars}. Skipping this cycle.")
+                return None
+
             if bars:
                 print("Last 11 bars:")
                 for bar in bars[-11:]:
@@ -288,6 +299,7 @@ class ForexStrategyRunner:
                 f"=== ITradingStrategy === (from {df.index.min().strftime('%Y-%m-%d')} to {df.index.max().strftime('%Y-%m-%d')})")
 
             results = cerebro.run()
+
             final_value = cerebro.broker.getvalue()
 
             print(f"Final Value: {final_value:,.2f}")
@@ -336,6 +348,7 @@ class ForexStrategyRunner:
             self.ib_connection.disconnect()
         self.logger.info("Forex Strategy Runner stopped.")
 
+
 if __name__ == '__main__':
     # Load parameters from JSON file
     params_path = Path(__file__).resolve().parent.parent / 'config' / 'parameters.json'
@@ -343,7 +356,7 @@ if __name__ == '__main__':
         params = json.load(f)
 
     logger = ITradingLogger()
-    
+
     runner = ForexStrategyRunner(params, logger)
     # To run in live mode, change the parameter to live=True
     runner.start(live=True)
