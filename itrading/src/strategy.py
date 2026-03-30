@@ -1502,14 +1502,9 @@ class ITradingStrategy(bt.Strategy):
 
     def next(self):
         """Main strategy logic using volatility expansion channel entry system with 4-phase state machine"""
-        # --- FIX for Live Trading: Only process the most recent bar ---
-        if self.p.live_tradingp.live_trading:
-            bar_time = self.data.datetime.datetime(0)
-            # Allow a small buffer (e.g., 15 minutes) for data latency
-            if self.p.current_utc_time and (self.p.current_utc_time - bar_time) > timedelta(minutes=15):
-                if self.p.verbose_debug:
-                    print(f"DEBUG: Skipping stale bar {bar_time} (current: {self.p.current_utc_time})")
-                return  # Do not process historical bars in live mode, only use them for indicator warmup
+        # In live mode, only process the last bar of the dataset
+        if self.p.live_trading and len(self) < self.data_len:
+            return
 
         # In live mode, do not execute logic if there is already a position.
         # The runner is responsible for managing the single live position.
