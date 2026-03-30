@@ -193,280 +193,116 @@ Trading involves substantial risk of loss. Past performance does not
 guarantee future results. Validate all logic and data quality before 
 using in any live or simulated trading environment.
 """
-# =============================================================
-# CONFIGURATION PARAMETERS - EASILY EDITABLE AT TOP OF FILE
-# =============================================================
-
-# ⚡⚡⚡ VOLATILITY EXPANSION CHANNEL - QUICK ACCESS ⚡⚡⚡
-# 🎯 The most important parameters for fine-tuning entry timing:
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🔧 USE_WINDOW_TIME_OFFSET = True         ← Enable/disable time delay (True/False)
-# 🔧 WINDOW_OFFSET_MULTIPLIER = 1.0        ← Time delay multiplier (0.5-2.0)
-# 🔧 WINDOW_PRICE_OFFSET_MULTIPLIER = 0.5  ← Channel expansion (0.3-1.0)
-# 🔧 LONG_PULLBACK_MAX_CANDLES = 1         ← LONG pullback depth (1-3)
-# 🔧 SHORT_PULLBACK_MAX_CANDLES = 2        ← SHORT pullback depth (1-3)
-# 🔧 LONG_ENTRY_WINDOW_PERIODS = 7         ← LONG window duration (3-10)
-# 🔧 SHORT_ENTRY_WINDOW_PERIODS = 7        ← SHORT window duration (3-10)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 💡 Find detailed explanations below in their respective sections
-# ⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡
-
-# === BACKTEST SETTINGS ===
-FROMDATE = None  # Start date for backtesting (YYYY-MM-DD) - None for all data
-TODATE = None  # End date for backtesting (YYYY-MM-DD) - None for all data
-STARTING_CASH = 10000.0  # Initial account balance in USD
-QUICK_TEST = False  # True: Reduce to last 10 days for quick testing
-LIMIT_BARS = 0  # >0: Stop after N bars processed (0 = no limit)
-ENABLE_PLOT = True  # Show final chart with trades (requires matplotlib)
-
-# === FOREX CONFIGURATION ===
-ENABLE_FOREX_CALC = True  # Enable advanced forex position calculations
-FOREX_INSTRUMENT = 'AUDUSD'  # Fixed to AUDUSD (Australian Dollar vs USD)
-TEST_FOREX_MODE = False  # True: Quick 30-day test with forex calculations
-
-# === TRADING DIRECTION ===
-ENABLE_LONG_TRADES = True  # Enable long (buy) entries
-ENABLE_SHORT_TRADES = False  # Enable short (sell) entries
-
-# === DUAL CEREBRO MODE ===
-RUN_DUAL_CEREBRO = False  # Run separate LONG-only and SHORT-only cerebros to avoid position interference
-
-# === DEBUG SETTINGS ===
-VERBOSE_DEBUG = True  # False                 # Print detailed debug info to console (set True only for troubleshooting)
-
-# === TRADE REPORTING ===
-EXPORT_TRADE_REPORTS = True  # Export detailed trade reports to temp_reports directory
-TRADE_REPORT_ENABLED = True  # Enable trade report generation (simple text format)
-
-# === PLOTTING OPTIONS ===
-SHOW_INDIVIDUAL_PLOTS = False  # Show individual LONG/SHORT plots when running dual cerebro
-AUTO_PLOT_SINGLE_MODE = False  # Automatically plot in single mode (LONG-only or SHORT-only)
-
-# === LONG ATR VOLATILITY FILTER ===
-LONG_USE_ATR_FILTER = True  # Enable ATR-based volatility filtering for long entries
-LONG_ATR_MIN_THRESHOLD = 0.00015
-LONG_ATR_MAX_THRESHOLD = 0.0005  # 🇦🇺 AUDUSD: Adjusted for Australian Dollar forex volatility characteristics
-# ATR INCREMENT FILTER (DISABLED - Inferior Performance)
-LONG_USE_ATR_INCREMENT_FILTER = False  # 🎯 OPTIMIZED: Increments showed inferior performance
-LONG_ATR_INCREMENT_MIN_THRESHOLD = 0.000001  # 🇦🇺 AUDUSD: Adjusted for Australian Dollar forex volatility
-LONG_ATR_INCREMENT_MAX_THRESHOLD = 0.0111  # 🇦🇺 AUDUSD: Adjusted for Australian Dollar forex volatility
-# ATR DECREMENT FILTER (OPTIMIZED - Only very low changes)
-LONG_USE_ATR_DECREMENT_FILTER = False  # 🎯 OPTIMIZED: Decrements with better performance
-LONG_ATR_DECREMENT_MIN_THRESHOLD = -0.004  # 🇦🇺 AUDUSD: Adjusted for Australian Dollar forex volatility
-LONG_ATR_DECREMENT_MAX_THRESHOLD = 0  # 🇦🇺 AUDUSD: Adjusted for Australian Dollar forex volatility
-
-# === SHORT ATR VOLATILITY FILTER ===
-SHORT_USE_ATR_FILTER = True  # Enable ATR-based volatility filtering for short entries
-SHORT_ATR_MIN_THRESHOLD = 0.000400  # 🎯 OPTIMIZED: Same optimal range as LONG
-SHORT_ATR_MAX_THRESHOLD = 0.000750  # 🎯 OPTIMIZED: Consistent with LONG analysis
-# ATR INCREMENT FILTER
-SHORT_USE_ATR_INCREMENT_FILTER = True  # 🎯 OPTIMIZED: Increments showed inferior performance
-SHORT_ATR_INCREMENT_MIN_THRESHOLD = 0.000001  # EXPANDED: Much wider range for more entries
-SHORT_ATR_INCREMENT_MAX_THRESHOLD = 0.001000  # EXPANDED: Much wider range for more entries
-# ATR DECREMENT FILTER
-SHORT_USE_ATR_DECREMENT_FILTER = True  # 🎯 OPTIMIZED: Decrements with better performance
-SHORT_ATR_DECREMENT_MIN_THRESHOLD = -0.000080  # 🎯 EXPANDED: Much wider range for more entries
-SHORT_ATR_DECREMENT_MAX_THRESHOLD = -0.000020  # 🎯 EXPANDED: Much wider range for more entries
-
-# === LONG ENTRY FILTERS ===
-LONG_USE_EMA_ORDER_CONDITION = False  # Require confirm_EMA > all other EMAs for long entries
-LONG_USE_PRICE_FILTER_EMA = True  # Require close > filter_EMA (trend alignment) for long entries
-LONG_USE_CANDLE_DIRECTION_FILTER = True  # Require previous candle bullish (close[1] > open[1]) for long entries
-LONG_USE_ANGLE_FILTER = True  # Require minimum EMA slope angle for long entries
-LONG_MIN_ANGLE = 0.0  # EXPANDED: Much wider angle range for more entries
-LONG_MAX_ANGLE = 30.0  # EXPANDED: Much wider angle range for more entries
-LONG_ANGLE_SCALE_FACTOR = 10.0  # 🎯 AUDUSD: Scale factor for Australian Dollar forex price range
-
-# === LONG EMA POSITION FILTER ===
-LONG_USE_EMA_BELOW_PRICE_FILTER = False  # NEW: Require fast, medium & slow EMAs below price for long entries
-
-# === SHORT ENTRY FILTERS ===
-SHORT_USE_EMA_ORDER_CONDITION = False  # Require confirm_EMA < all other EMAs for short entries
-SHORT_USE_PRICE_FILTER_EMA = True  # Require close < filter_EMA (trend alignment) for short entries
-SHORT_USE_CANDLE_DIRECTION_FILTER = True  # Require previous candle bearish (close[1] < open[1]) for short entries
-SHORT_USE_ANGLE_FILTER = True  # Require minimum EMA slope angle for short entries
-SHORT_MIN_ANGLE = -90.0  # EXPANDED: Much wider angle range for more entries
-SHORT_MAX_ANGLE = -20.0  # EXPANDED: Much wider angle range for more entries
-SHORT_ANGLE_SCALE_FACTOR = 10.0  # 🇦🇺 AUDUSD: Scale factor for Australian Dollar forex price range
-
-# === SHORT EMA POSITION FILTER ===
-SHORT_USE_EMA_ABOVE_PRICE_FILTER = False  # NEW: Require fast, medium & slow EMAs above price for short entries
-
-# === LONG PULLBACK ENTRY SYSTEM ===
-LONG_USE_PULLBACK_ENTRY = True  # Enable 3-phase pullback entry system for long entries
-LONG_PULLBACK_MAX_CANDLES = 2  # Max red candles in pullback for long entries (1-3 recommended)
-LONG_ENTRY_WINDOW_PERIODS = 1  # Bars to wait for breakout after pullback (long entries)
-
-# === SHORT PULLBACK ENTRY SYSTEM ===
-SHORT_USE_PULLBACK_ENTRY = True  # Enable 3-phase pullback entry system for short entries
-SHORT_PULLBACK_MAX_CANDLES = 2  # Max green candles in pullback for short entries (1-3 recommended)
-SHORT_ENTRY_WINDOW_PERIODS = 7  # Bars to wait for breakdown after pullback (short entries)
-
-# ===============================================================
-# ⚡ VOLATILITY EXPANSION CHANNEL - KEY TIMING PARAMETERS ⚡
-# ===============================================================
-# 🎯 CRITICAL: These parameters control the advanced entry timing system
-# 🔧 USE_WINDOW_TIME_OFFSET: Enable/disable time delay for window opening
-USE_WINDOW_TIME_OFFSET = False  # NEW: Enable/disable the time delay for window opening
-# 🔧 WINDOW_OFFSET_MULTIPLIER: Controls delay between pullback and window opening (only if USE_WINDOW_TIME_OFFSET=True)
-WINDOW_OFFSET_MULTIPLIER = 0.5  # Window delay multiplier (0.5=fast, 1.0=standard, 2.0=conservative)
-# Formula: window_start = current_bar + (pullback_count × this_value)
-# 🔬 EXPERIMENT: Try 0.5 for aggressive, 1.5 for conservative entries
-# 🔧 WINDOW_PRICE_OFFSET_MULTIPLIER: Controls the price expansion of the two-sided channel
-WINDOW_PRICE_OFFSET_MULTIPLIER = 0.001  # NEW: Price expansion multiplier (0.5 = 50% of candle range)
-# Formula: channel_width = candle_range × this_value
-# ===============================================================
-
-# === TIME RANGE FILTER ===
-USE_TIME_RANGE_FILTER = True  # ENABLED: Time filter for complete analysis
-ENTRY_START_HOUR = 23  # Start hour for entry window (UTC)
-ENTRY_START_MINUTE = 0  # Start minute for entry window (UTC)
-ENTRY_END_HOUR = 16  # End hour for entry window (UTC)
-ENTRY_END_MINUTE = 0  # End minute for entry window (UTC)
-
 
 class ITradingStrategy(bt.Strategy):
     params = dict(
         # === LIVE TRADING / SIGNALING ===
-        live_trading=False, # Set to True for live mode to generate signals instead of orders
-        signal_queue=None, # Queue for passing signals to the runner
-        current_utc_time=None, # The real-world time for freshness check
+        live_trading=False,
+        signal_queue=None,
+
+        # === STRATEGY BEHAVIOR ===
+        enable_long_trades=True,
+        enable_short_trades=False,
+        long_use_pullback_entry=True,
+        short_use_pullback_entry=True,
 
         # === TECHNICAL INDICATORS ===
-        ema_fast_length=18,  # Fast EMA period for trend detection #14
-        ema_medium_length=18,  # Medium EMA period for trend confirmation #18
-        ema_slow_length=24,  # Slow EMA period for trend strength # 24
-        ema_confirm_length=1,  # Confirmation EMA (usually 1 for immediate response)
-        ema_filter_price_length=40,  # Price filter EMA to avoid counter-trend trades #50
-        ema_exit_length=25,  # Exit EMA for crossover exit strategy
+        ema_fast_length=18,
+        ema_medium_length=18,
+        ema_slow_length=24,
+        ema_confirm_length=1,
+        ema_filter_price_length=40,
+        ema_exit_length=25,
+        atr_length=10,
 
-        # === ATR RISK MANAGEMENT ===
-        atr_length=10,  # ATR calculation period
-
-        # === TRADING DIRECTION ===
-        enable_long_trades=ENABLE_LONG_TRADES,  # Enable long (buy) entries
-        enable_short_trades=ENABLE_SHORT_TRADES,  # Enable short (sell) entries
-
-        # === DUAL CEREBRO OVERRIDES ===
-        long_enabled=None,  # Override for LONG trades (None=use enable_long_trades)
-        short_enabled=None,  # Override for SHORT trades (None=use enable_short_trades)
-
-        # === LONG ATR VOLATILITY FILTER ===
-        long_use_atr_filter=LONG_USE_ATR_FILTER,  # Enable ATR-based volatility filtering for long entries
-        long_atr_min_threshold=LONG_ATR_MIN_THRESHOLD,  # Minimum ATR for long entry
-        long_atr_max_threshold=LONG_ATR_MAX_THRESHOLD,  # Maximum ATR for long entry
-        # ATR INCREMENT/DECREMENT FILTERS
-        long_use_atr_increment_filter=LONG_USE_ATR_INCREMENT_FILTER,  # Enable ATR increment filtering
-        long_atr_increment_min_threshold=LONG_ATR_INCREMENT_MIN_THRESHOLD,  # Minimum ATR increment
-        long_atr_increment_max_threshold=LONG_ATR_INCREMENT_MAX_THRESHOLD,  # Maximum ATR increment
-        long_use_atr_decrement_filter=LONG_USE_ATR_DECREMENT_FILTER,  # Enable ATR decrement filtering
-        long_atr_decrement_min_threshold=LONG_ATR_DECREMENT_MIN_THRESHOLD,  # Minimum ATR decrement
-        long_atr_decrement_max_threshold=LONG_ATR_DECREMENT_MAX_THRESHOLD,  # Maximum ATR decrement
-
-        # === LONG ENTRY FILTERS ===
-        long_use_ema_order_condition=LONG_USE_EMA_ORDER_CONDITION,
-        # Require confirm_EMA > all other EMAs for long entries
-        long_use_price_filter_ema=LONG_USE_PRICE_FILTER_EMA,
-        # Require close > filter_EMA (trend alignment) for long entries
-        long_use_candle_direction_filter=LONG_USE_CANDLE_DIRECTION_FILTER,
-        # Require previous candle bullish for long entries
-        long_use_angle_filter=LONG_USE_ANGLE_FILTER,  # Require minimum EMA slope angle for long entries
-        long_min_angle=LONG_MIN_ANGLE,  # Minimum angle in degrees for EMA slope (long entries)
-        long_max_angle=LONG_MAX_ANGLE,  # Maximum angle in degrees for EMA slope (long entries)
-        long_angle_scale_factor=LONG_ANGLE_SCALE_FACTOR,
-        # Scaling factor for angle calculation sensitivity (long entries)
-        long_use_ema_below_price_filter=LONG_USE_EMA_BELOW_PRICE_FILTER,
-        # NEW: Require fast, medium & slow EMAs below price for long entries
-        long_atr_sl_multiplier=4.4,  # Stop Loss multiplier for LONG trades
-        long_atr_tp_multiplier=6.8,  # Take Profit multiplier for LONG trades
-
-        # === LONG PULLBACK ENTRY SYSTEM ===
-        long_use_pullback_entry=LONG_USE_PULLBACK_ENTRY,  # Enable 3-phase pullback entry system for long entries
-        long_pullback_max_candles=LONG_PULLBACK_MAX_CANDLES,
-        # Max red candles in pullback for long entries (1-3 recommended)
-        long_entry_window_periods=LONG_ENTRY_WINDOW_PERIODS,  # Bars to wait for breakout after pullback (long entries)
-        window_offset_multiplier=WINDOW_OFFSET_MULTIPLIER,  # ⚡ CRITICAL: Volatility expansion window timing control
-        use_window_time_offset=USE_WINDOW_TIME_OFFSET,  # ⚡ NEW: Enable/disable time delay for window opening
-        window_price_offset_multiplier=WINDOW_PRICE_OFFSET_MULTIPLIER,  # ⚡ NEW: Controls two-sided channel expansion
-
-        # === SHORT ATR VOLATILITY FILTER ===
-        short_use_atr_filter=SHORT_USE_ATR_FILTER,  # Enable ATR-based volatility filtering for short entries
-        short_atr_min_threshold=SHORT_ATR_MIN_THRESHOLD,  # Minimum ATR for short entry
-        short_atr_max_threshold=SHORT_ATR_MAX_THRESHOLD,  # Maximum ATR for short entry
-        # ATR INCREMENT/DECREMENT FILTERS
-        short_use_atr_increment_filter=SHORT_USE_ATR_INCREMENT_FILTER,  # Enable ATR increment filtering
-        short_atr_increment_min_threshold=SHORT_ATR_INCREMENT_MIN_THRESHOLD,  # Minimum ATR increment
-        short_atr_increment_max_threshold=SHORT_ATR_INCREMENT_MAX_THRESHOLD,  # Maximum ATR increment
-        short_use_atr_decrement_filter=SHORT_USE_ATR_DECREMENT_FILTER,  # Enable ATR decrement filtering
-        short_atr_decrement_min_threshold=SHORT_ATR_DECREMENT_MIN_THRESHOLD,  # Minimum ATR decrement
-        short_atr_decrement_max_threshold=SHORT_ATR_DECREMENT_MAX_THRESHOLD,  # Maximum ATR decrement
-
-        # === SHORT ENTRY FILTERS ===
-        short_use_ema_order_condition=SHORT_USE_EMA_ORDER_CONDITION,
-        # Require confirm_EMA < all other EMAs for short entries
-        short_use_price_filter_ema=SHORT_USE_PRICE_FILTER_EMA,
-        # Require close < filter_EMA (trend alignment) for short entries
-        short_use_candle_direction_filter=SHORT_USE_CANDLE_DIRECTION_FILTER,
-        # Require previous candle bearish for short entries
-        short_use_angle_filter=SHORT_USE_ANGLE_FILTER,  # Require minimum EMA slope angle for short entries
-        short_min_angle=SHORT_MIN_ANGLE,  # Minimum angle in degrees for EMA slope (short entries)
-        short_max_angle=SHORT_MAX_ANGLE,  # Maximum angle in degrees for EMA slope (short entries)
-        short_angle_scale_factor=SHORT_ANGLE_SCALE_FACTOR,
-        # Scaling factor for angle calculation sensitivity (short entries)
-        short_use_ema_above_price_filter=SHORT_USE_EMA_ABOVE_PRICE_FILTER,
-        # NEW: Require fast, medium & slow EMAs above price for short entries
-        short_atr_sl_multiplier=2.5,  # Stop Loss multiplier for SHORT trades
-        short_atr_tp_multiplier=6.5,  # Take Profit multiplier for SHORT trades
-
-        # === SHORT PULLBACK ENTRY SYSTEM ===
-        short_use_pullback_entry=SHORT_USE_PULLBACK_ENTRY,  # Enable 3-phase pullback entry system for short entries
-        short_pullback_max_candles=SHORT_PULLBACK_MAX_CANDLES,
-        # Max green candles in pullback for short entries (1-3 recommended)
-        short_entry_window_periods=SHORT_ENTRY_WINDOW_PERIODS,
-        # Bars to wait for breakdown after pullback (short entries)
+        # === VOLATILITY EXPANSION CHANNEL ===
+        use_window_time_offset=False,
+        window_offset_multiplier=0.5,
+        window_price_offset_multiplier=0.001,
+        long_pullback_max_candles=2,
+        short_pullback_max_candles=2,
+        long_entry_window_periods=1,
+        short_entry_window_periods=7,
 
         # === TIME RANGE FILTER ===
-        use_time_range_filter=USE_TIME_RANGE_FILTER,  # ENABLED: Time filter for complete analysis
-        entry_start_hour=ENTRY_START_HOUR,  # Start hour for entry window (UTC)
-        entry_start_minute=ENTRY_START_MINUTE,  # Start minute for entry window (UTC)
-        entry_end_hour=ENTRY_END_HOUR,  # End hour for entry window (UTC)
-        entry_end_minute=ENTRY_END_MINUTE,  # End minute for entry window (UTC)
+        use_time_range_filter=True,
+        entry_start_hour=23,
+        entry_start_minute=0,
+        entry_end_hour=16,
+        entry_end_minute=0,
 
-        # === POSITION SIZING ===
-        size=1,  # Default position size (used if risk sizing disabled)
-        enable_risk_sizing=True,  # Enable percentage-based risk sizing
-        risk_percent=0.01,  # Risk 1% of account per trade
-        contract_size=100000,  # Base contract size (auto-adjusted per instrument)
-        print_signals=True,  # Print trade signals and debug info to console
-        verbose_debug=VERBOSE_DEBUG,  # Print detailed debug info to console (for troubleshooting only)
+        # === POSITION SIZING & RISK ===
+        size=1,
+        enable_risk_sizing=True,
+        risk_percent=0.01,
+        long_atr_sl_multiplier=4.4,
+        long_atr_tp_multiplier=6.8,
+        short_atr_sl_multiplier=2.5,
+        short_atr_tp_multiplier=6.5,
+
+        # === LONG ENTRY FILTERS ===
+        long_use_ema_order_condition=False,
+        long_use_price_filter_ema=True,
+        long_use_candle_direction_filter=True,
+        long_use_ema_below_price_filter=False,
+        long_use_angle_filter=True,
+        long_min_angle=0.0,
+        long_max_angle=30.0,
+        long_angle_scale_factor=10.0,
+
+        # === SHORT ENTRY FILTERS ===
+        short_use_ema_order_condition=False,
+        short_use_price_filter_ema=True,
+        short_use_candle_direction_filter=True,
+        short_use_ema_above_price_filter=False,
+        short_use_angle_filter=True,
+        short_min_angle=-90.0,
+        short_max_angle=-20.0,
+        short_angle_scale_factor=10.0,
+
+        # === LONG ATR VOLATILITY FILTER ===
+        long_use_atr_filter=True,
+        long_atr_min_threshold=0.00015,
+        long_atr_max_threshold=0.0005,
+        long_use_atr_increment_filter=False,
+        long_atr_increment_min_threshold=0.000001,
+        long_atr_increment_max_threshold=0.0111,
+        long_use_atr_decrement_filter=False,
+        long_atr_decrement_min_threshold=-0.004,
+        long_atr_decrement_max_threshold=0,
+
+        # === SHORT ATR VOLATILITY FILTER ===
+        short_use_atr_filter=True,
+        short_atr_min_threshold=0.000400,
+        short_atr_max_threshold=0.000750,
+        short_use_atr_increment_filter=True,
+        short_atr_increment_min_threshold=0.000001,
+        short_atr_increment_max_threshold=0.001000,
+        short_use_atr_decrement_filter=True,
+        short_atr_decrement_min_threshold=-0.000080,
+        short_atr_decrement_max_threshold=-0.000020,
 
         # === FOREX SETTINGS ===
-        use_forex_position_calc=True,  # Enable advanced forex position calculations
-        forex_instrument='AUDUSD',  # Fixed to AUDUSD
-        forex_base_currency='XAU',  # Base currency: XAU
-        forex_quote_currency='USD',  # Quote currency: USD
-        forex_pip_value=0.0001,  # Pip value for AUDUSD
-        forex_pip_decimal_places=4,  # Price decimal places for EURUSD
-        forex_lot_size=100000,  # Lot size for EURUSD (100K EUR)
-        forex_micro_lot_size=0.01,  # Minimum lot increment (0.01 standard lots)
-        forex_spread_pips=2.2,  # Typical spread in pips for EURUSD
-        forex_margin_required=3.33,  # Margin requirement % for EURUSD (30:1 leverage)
+        instrument_name='AUDUSD',
+        use_forex_position_calc=True,
+        contract_size=100000,
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
+        account_currency='USD',
+        account_leverage=30.0,
 
-        # === ACCOUNT SETTINGS ===
-        account_currency='USD',  # Account denomination currency
-        account_leverage=30.0,  # Account leverage (matches broker setting)
-
-        # === PLOTTING & VISUALIZATION ===
-        plot_result=True,  # Enable strategy plotting
-        buy_sell_plotdist=0.0005,  # Distance for buy/sell markers on chart
-        plot_sltp_lines=True,  # Show stop loss and take profit lines
-        instrument_name=None,
+        # === REPORTING & DEBUGGING ===
+        verbose_debug=True,
+        print_signals=True,
+        export_trade_reports=True,
         dataname=None,
     )
 
     def _record_trade_entry(self, signal_direction, dt, entry_price, position_size, current_atr):
         """Record trade entry details for reporting (optimized format)"""
-        if not (EXPORT_TRADE_REPORTS or TRADE_REPORT_ENABLED) or not self.trade_report_file:
+        if not self.p.export_trade_reports or not self.trade_report_file:
             return
 
         try:
@@ -591,7 +427,7 @@ class ITradingStrategy(bt.Strategy):
 
     def _record_trade_exit(self, dt, exit_price, pnl, exit_reason):
         """Record trade exit details for reporting (optimized format)"""
-        if not (EXPORT_TRADE_REPORTS or TRADE_REPORT_ENABLED) or not self.trade_report_file:
+        if not self.p.export_trade_reports or not self.trade_report_file:
             return
 
         try:
@@ -810,7 +646,7 @@ class ITradingStrategy(bt.Strategy):
             print(f"DEBUG_POSITION_SIZE: Final calculated size {units} is below exchange minimum {min_exchange_units}. Blocking trade.")
             return 0.0, 0, 0.0, 0.0, 0.0
 
-        optimal_lots = units / self.p.forex_lot_size
+        optimal_lots = units / self.p.contract_size
         position_value = units * entry_price
         margin_required = position_value * (self.p.forex_margin_required / 100.0)
         
@@ -856,12 +692,12 @@ class ITradingStrategy(bt.Strategy):
         spread_cost = self.p.forex_spread_pips * lot_size * pip_value_per_lot
 
         # Format units for XAUUSD
-        units_desc = f"{lot_size * self.p.forex_lot_size:,.0f} oz {self.p.forex_base_currency}"
+        units_desc = f"{lot_size * self.p.contract_size:,.0f} oz {self.p.forex_base_currency}"
 
         # Format prices based on decimal places
         price_format = f"{{:.{self.p.forex_pip_decimal_places}f}}"
 
-        return (f"\n--- AUDUSD TRADE DETAILS ({self.p.forex_instrument}) ---\n"
+        return (f"\n--- AUDUSD TRADE DETAILS ({self.p.instrument_name}) ---\n"
                 f"Position Size: {lot_size:.2f} lots ({units_desc})\n"
                 f"Position Value: ${position_value:,.2f}\n"
                 f"Margin Required: ${margin_required:,.2f} ({self.p.forex_margin_required}%)\n"
@@ -936,15 +772,14 @@ class ITradingStrategy(bt.Strategy):
         self.p.forex_quote_currency = config['quote_currency']
         self.p.forex_pip_value = config['pip_value']
         self.p.forex_pip_decimal_places = config['pip_decimal_places']
-        self.p.forex_lot_size = config['lot_size']
+        self.p.contract_size = config['lot_size']
         self.p.forex_margin_required = config['margin_required']
         self.p.forex_spread_pips = config['typical_spread']
-        self.p.forex_instrument = instrument_name
 
         print(f"CONFIGURED: {instrument_name}")
         print(f"Forex Config: {self.p.forex_base_currency}/{self.p.forex_quote_currency}")
         print(
-            f"Tick Value: {self.p.forex_pip_value} | Lot Size: {self.p.forex_lot_size:,} | Margin: {self.p.forex_margin_required}%")
+            f"Tick Value: {self.p.forex_pip_value} | Lot Size: {self.p.contract_size:,} | Margin: {self.p.forex_margin_required}%")
 
     def __init__(self):
         d = self.data
@@ -1038,14 +873,7 @@ class ITradingStrategy(bt.Strategy):
         # Apply forex configuration based on instrument detection
         if self.p.use_forex_position_calc:
             self._apply_forex_config()
-            self.p.contract_size = self.p.forex_lot_size  # Sync the contract size with the detected lot size
             self._validate_forex_setup()
-
-        # Apply dual cerebro overrides for trading direction
-        if self.p.long_enabled is not None:
-            self.p.enable_long_trades = self.p.long_enabled
-        if self.p.short_enabled is not None:
-            self.p.enable_short_trades = self.p.short_enabled
 
         # Initialize trade reporting
         self.trade_report_file = None
@@ -1055,14 +883,14 @@ class ITradingStrategy(bt.Strategy):
     def start(self):
         """Called once before the strategy starts."""
         if self.p.live_trading:
-            self.data_len = len(self.data)
+            self.data_len = self.data.buflen()
 
     def _init_trade_reporting(self):
         """Initialize trade reporting functionality"""
         self.trade_reports = []  # Store trade details for export
         self.trade_report_file = None
 
-        if EXPORT_TRADE_REPORTS or TRADE_REPORT_ENABLED:
+        if self.p.export_trade_reports:
             try:
                 # Create reports directory if it doesn't exist
                 from pathlib import Path
@@ -1844,7 +1672,7 @@ class ITradingStrategy(bt.Strategy):
                     bt_size = units
                 else:
                     # If risk sizing is disabled, use the default size parameter multiplied by lot size
-                    bt_size = int(self.p.size * self.p.forex_lot_size)
+                    bt_size = int(self.p.size * self.p.contract_size)
 
                 if bt_size <= 0:
                     self._reset_entry_state()

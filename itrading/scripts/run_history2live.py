@@ -33,6 +33,7 @@ def run_bot():
     # 1. Fetch History
     bars = ib.reqHistoricalData(contract, endDateTime='', durationStr='1 D',
                                 barSizeSetting='5 mins', whatToShow='MIDPOINT', useRTH=True)
+    print(f"Successfully received {len(bars)} historical bars for EURUSD.")
     df = util.df(bars)
     df.set_index('date', inplace=True)
 
@@ -55,8 +56,10 @@ def run_bot():
             # We push the new bar into the existing Backtrader data feed
             # so the strategy.next() runs again with live data
             new_bar = bars[-1]
-            data.append(new_bar)  # Note: Some setups require custom data feeding
-            print(f"🎯 New Live Bar: {new_bar.time} | Close: {new_bar.close}")
+            print(f"🎯 New Live Bar Received in onBarUpdate: {new_bar.time} | Open: {new_bar.open_} | Close: {new_bar.close}")
+            #print(dir(new_bar))
+            # The line below does not work as expected with standard backtrader feeds
+            data.append(new_bar)
 
     live_bars = ib.reqRealTimeBars(contract, 5, 'MIDPOINT', False)
     live_bars.updateEvent += onBarUpdate
