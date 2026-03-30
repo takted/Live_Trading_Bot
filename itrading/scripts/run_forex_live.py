@@ -108,19 +108,17 @@ def on_bar_update(bars, has_new_bar):
         print(f"[Live Tick] {latest_bar.time.strftime('%H:%M:%S')} | Closing Price: {latest_bar.close}")
         g_last_tick_info = current_tick_info
 
-    if not has_new_bar:
-        return
+    if has_new_bar:
+        if latest_bar.time == last_processed_time:
+            return
 
-    if latest_bar.time == last_processed_time:
-        return
+        last_processed_time = latest_bar.time
+        logger.info(f"🎯 New 5-Minute Bar Closed: {latest_bar.time} | Price: {latest_bar.close}")
 
-    last_processed_time = latest_bar.time
-    logger.info(f"🎯 New 5-Minute Bar Closed: {latest_bar.time} | Price: {latest_bar.close}")
-
-    # Create and track the background task
-    task = asyncio.create_task(run_strategy_on_live_bar(bars))
-    active_tasks.add(task)
-    task.add_done_callback(active_tasks.discard)
+        # Create and track the background task ONLY when a new bar is formed
+        task = asyncio.create_task(run_strategy_on_live_bar(bars))
+        active_tasks.add(task)
+        task.add_done_callback(active_tasks.discard)
 
 
 async def run_strategy_on_live_bar(live_bars):

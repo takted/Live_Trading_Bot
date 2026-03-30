@@ -1048,7 +1048,9 @@ class ITradingStrategy(bt.Strategy):
             self.p.enable_short_trades = self.p.short_enabled
 
         # Initialize trade reporting
-        self._init_trade_reporting()
+        self.trade_report_file = None
+        if not self.p.live_trading:
+            self._init_trade_reporting()
 
     def start(self):
         """Called once before the strategy starts."""
