@@ -76,17 +76,22 @@ def on_bar_update(bars, has_new_bar):
     global last_processed_time, active_tasks, g_last_tick_info
     
     latest_bar = bars[-1]
-    current_tick_info = (latest_bar.time, latest_bar.close)
-
+    current_time = latest_bar.time
+    
+    # Print live ticks as they come in
+    current_tick_info = (current_time, latest_bar.close, latest_bar.open_, latest_bar.high, latest_bar.low, latest_bar.volume)
     if current_tick_info != g_last_tick_info:
-        print(f"[Live Tick] {latest_bar.time.strftime('%H:%M:%S')} | Closing Price: {latest_bar.close}")
+        print(f"[Live Tick] {current_time.strftime('%Y-%m-%d %H:%M:%S')} | Open Price: {latest_bar.open_} | High: {latest_bar.high} | Low: {latest_bar.low} | Closing Price: {latest_bar.close}| Volume: {latest_bar.volume}")
         g_last_tick_info = current_tick_info
 
-    if has_new_bar:
-        if latest_bar.time == last_processed_time:
+    # Trigger analysis only on 5-minute boundaries
+    if current_time.minute % 5 == 0 and current_time.second == 0:
+        if current_time == last_processed_time:
             return
-        last_processed_time = latest_bar.time
-        logger.info(f"🎯 New 5-Minute Bar Closed: {latest_bar.time} | Price: {latest_bar.close}")
+        last_processed_time = current_time
+        logger.info(f"🎯 5-Minute Boundary Reached: {current_time} | Price: {latest_bar.close}")
+        
+        # Run analysis in a background task
         task = asyncio.create_task(run_strategy_on_live_bar(bars))
         active_tasks.add(task)
         task.add_done_callback(active_tasks.discard)
@@ -94,7 +99,7 @@ def on_bar_update(bars, has_new_bar):
 async def run_strategy_on_live_bar(live_bars):
     """Runs a fresh cerebro instance on the latest data for live trading."""
     global historical_df
-    logger.info("--- Analyzing new bar with ITradingStrategy (Live Mode) ---")
+    logger.info("--- Analyzing new 5-minute interval with ITradingStrategy (Live Mode) ---")
     params = load_params()
     
     live_df = util.df(live_bars)
@@ -102,17 +107,23 @@ async def run_strategy_on_live_bar(live_bars):
         logger.warning("Live DataFrame is empty. Skipping.")
         return
 
+    # Combine historical and live data
     combined_df = pd.concat([historical_df, live_df]) if historical_df is not None else live_df
     combined_df = combined_df[~combined_df.index.duplicated(keep='last')]
-    combined_df.index = pd.to_datetime(combined_df.index, utc=True).round('us')
+    
+    # Take a slice of the last 200 bars for indicator warm-up
+    data_slice = combined_df.iloc[-200:]
+    data_slice.index = pd.to_datetime(data_slice.index, utc=True).round('us')
 
     signal_queue = asyncio.Queue()
     cerebro = bt.Cerebro(stdstats=False)
-    data_feed = bt.feeds.PandasData(dataname=combined_df, timeframe=bt.TimeFrame.Minutes, compression=5)
-    cerebro.adddata(data_feed)
+    
+    # Add the sliced data and resample it to 5 minutes
+    data_feed = bt.feeds.PandasData(dataname=data_slice)
+    cerebro.resampledata(data_feed, timeframe=bt.TimeFrame.Minutes, compression=5)
+    
     cerebro.broker.setcash(params['STARTING_CASH'])
     
-    # Add strategy with live_trading=True
     cerebro.addstrategy(
         ITradingStrategy,
         live_trading=True,
@@ -122,7 +133,7 @@ async def run_strategy_on_live_bar(live_bars):
 
     try:
         await asyncio.to_thread(cerebro.run)
-        signal = await asyncio.wait_for(signal_queue.get(), timeout=5.0)
+        signal = await asyncio.wait_for(signal_queue.get(), timeout=10.0)
         logger.info(f"✅ Signal received from strategy: {signal}")
         contract = Forex(params['FOREX_INSTRUMENT'])
         await ib.qualifyContractsAsync(contract)
@@ -156,10 +167,9 @@ async def run_historical_analysis(params):
     historical_df.index = historical_df.index.round('us')
 
     cerebro = bt.Cerebro(stdstats=False)
-    data = bt.feeds.PandasData(dataname=historical_df, timeframe=bt.TimeFrame.Minutes, compression=5)
-    cerebro.adddata(data)
+    data = bt.feeds.PandasData(dataname=historical_df)
+    cerebro.resampledata(data, timeframe=bt.TimeFrame.Minutes, compression=5)
     
-    # Add strategy with live_trading=False
     cerebro.addstrategy(
         ITradingStrategy,
         live_trading=False,
@@ -179,14 +189,12 @@ async def run_bot():
     await ib.connectAsync(params['IB_HOST'], params['IB_PORT'], clientId=params['IB_CLIENT_ID'])
     logger.info("✅ Connected to Interactive Brokers")
 
-    # Step 1: Run historical analysis
     if not await run_historical_analysis(params):
         return
 
-    # Step 2: Transition to live trading
-    logger.info("--- Transitioning to LIVE MODE. Awaiting new bar data... ---")
+    logger.info("--- Transitioning to LIVE MODE. Awaiting new 5-second bar data... ---")
     contract = Forex(params['FOREX_INSTRUMENT'])
-    live_bars = ib.reqRealTimeBars(contract, 300, 'MIDPOINT', False)
+    live_bars = ib.reqRealTimeBars(contract, 5, 'MIDPOINT', True)
     live_bars.updateEvent += on_bar_update
 
     try:

@@ -880,9 +880,12 @@ class ITradingStrategy(bt.Strategy):
         if not self.p.live_trading:
             self._init_trade_reporting()
 
-    def start(self):
-        """Called once before the strategy starts."""
         if self.p.live_trading:
+            self.data_len = 0
+
+    def prenext(self):
+        """Called before next() once minimum periods are met."""
+        if self.p.live_trading and self.data_len == 0:
             self.data_len = self.data.buflen()
 
     def _init_trade_reporting(self):
@@ -1333,7 +1336,7 @@ class ITradingStrategy(bt.Strategy):
     def next(self):
         """Main strategy logic using volatility expansion channel entry system with 4-phase state machine"""
         # In live mode, only process the last bar of the dataset
-        if self.p.live_trading and len(self) < self.data_len:
+        if self.p.live_trading and (self.data_len == 0 or len(self) < self.data_len):
             return
 
         # In live mode, do not execute logic if there is already a position.
