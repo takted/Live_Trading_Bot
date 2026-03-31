@@ -82,6 +82,7 @@
     "account_leverage": 30.0,
     "verbose_debug": true,
     "print_signals": true,
-    "export_trade_reports": true
+    "export_trade_reports": true,
+    "lifecycle_logging": true
   }
 }

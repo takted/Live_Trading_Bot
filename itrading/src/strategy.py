@@ -199,6 +199,8 @@ class ITradingStrategy(bt.Strategy):
         # === LIVE TRADING / SIGNALING ===
         live_trading=False,
         signal_queue=None,
+        live_cutoff_dt=None,
+        live_state_in=None,
 
         # === STRATEGY BEHAVIOR ===
         enable_long_trades=True,
@@ -207,10 +209,10 @@ class ITradingStrategy(bt.Strategy):
         short_use_pullback_entry=True,
 
         # === TECHNICAL INDICATORS ===
-        ema_fast_length=18,
-        ema_medium_length=18,
+        ema_fast_length=10,
+        ema_medium_length=20,
         ema_slow_length=24,
-        ema_confirm_length=1,
+        ema_confirm_length=5,
         ema_filter_price_length=40,
         ema_exit_length=25,
         atr_length=10,
@@ -221,7 +223,7 @@ class ITradingStrategy(bt.Strategy):
         window_price_offset_multiplier=0.001,
         long_pullback_max_candles=2,
         short_pullback_max_candles=2,
-        long_entry_window_periods=1,
+        long_entry_window_periods=5,
         short_entry_window_periods=7,
 
         # === TIME RANGE FILTER ===
@@ -297,6 +299,7 @@ class ITradingStrategy(bt.Strategy):
         verbose_debug=True,
         print_signals=True,
         export_trade_reports=True,
+        lifecycle_logging=False,  # Compact lifecycle logger (init/prenext/next1/notify_order/notify_trade/stop)
         dataname=None,
     )
 
@@ -882,11 +885,65 @@ class ITradingStrategy(bt.Strategy):
 
         if self.p.live_trading:
             self.data_len = 0
+            self.live_state_snapshot = {}
+            self._load_live_state(self.p.live_state_in)
+
+        # --- Lifecycle Logger ---
+        self._first_next_logged = False
+        if self.p.lifecycle_logging:
+            print(f"[LIFECYCLE] __init__ | instrument={self.p.instrument_name} | live={self.p.live_trading} | long={self.p.enable_long_trades} short={self.p.enable_short_trades} | pullback_L={self.p.long_use_pullback_entry} pullback_S={self.p.short_use_pullback_entry} | ATR={self.p.atr_length} EMA_confirm={self.p.ema_confirm_length}")
+
+    def _lifecycle_debug(self, message):
+        """Emit compact diagnostic logs when lifecycle logging is enabled."""
+        if self.p.lifecycle_logging:
+            print(f"[LIFECYCLE] {message}")
+
+    def _load_live_state(self, state):
+        """Restore minimal live state so each 5-minute run continues from prior run."""
+        if not state:
+            return
+        keys = [
+            'entry_state', 'armed_direction', 'pullback_candle_count',
+            'last_pullback_candle_high', 'last_pullback_candle_low',
+            'window_top_limit', 'window_bottom_limit', 'window_expiry_bar',
+            'window_breakout_level', 'signal_trigger_candle',
+            'signal_detection_atr', 'signal_detection_bar',
+            'entry_window_start', 'breakout_target'
+        ]
+        for key in keys:
+            if key in state:
+                setattr(self, key, state[key])
+
+    def _capture_live_state(self):
+        """Capture minimal live state to continue across runner cycles."""
+        return {
+            'entry_state': self.entry_state,
+            'armed_direction': self.armed_direction,
+            'pullback_candle_count': self.pullback_candle_count,
+            'last_pullback_candle_high': self.last_pullback_candle_high,
+            'last_pullback_candle_low': self.last_pullback_candle_low,
+            'window_top_limit': self.window_top_limit,
+            'window_bottom_limit': self.window_bottom_limit,
+            'window_expiry_bar': self.window_expiry_bar,
+            'window_breakout_level': self.window_breakout_level,
+            'signal_trigger_candle': self.signal_trigger_candle,
+            'signal_detection_atr': self.signal_detection_atr,
+            'signal_detection_bar': self.signal_detection_bar,
+            'entry_window_start': self.entry_window_start,
+            'breakout_target': self.breakout_target,
+        }
+
+    def _persist_live_state_snapshot(self):
+        """Persist live state across 5-minute runner cycles."""
+        if self.p.live_trading:
+            self.live_state_snapshot = self._capture_live_state()
 
     def prenext(self):
         """Called before next() once minimum periods are met."""
         if self.p.live_trading and self.data_len == 0:
             self.data_len = self.data.buflen()
+        if self.p.lifecycle_logging:
+            print(f"[LIFECYCLE] prenext | bar={len(self)} | total_bars={self.data.buflen()} | close={float(self.data.close[0]):.5f}")
 
     def _init_trade_reporting(self):
         """Initialize trade reporting functionality"""
@@ -1047,6 +1104,8 @@ class ITradingStrategy(bt.Strategy):
             if self.p.long_use_candle_direction_filter:
                 candle_direction_ok = prev_bull
 
+            signal_valid = False
+
             if candle_direction_ok and cross_any:
                 # Apply additional filters
                 signal_valid = True
@@ -1094,7 +1153,23 @@ class ITradingStrategy(bt.Strategy):
                     # ✅ CRITICAL FIX: Store ATR when LONG signal is detected
                     current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                     self.signal_detection_atr = current_atr
+                    self._lifecycle_debug(
+                        f"phase1 LONG pass | cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow}) "
+                        f"| prev_bull={prev_bull} | atr={current_atr:.6f}")
                     return 'LONG'
+            elif self.p.live_trading:
+                self._lifecycle_debug(
+                    f"phase1 LONG blocked | candle_ok={candle_direction_ok} prev_bull={prev_bull} "
+                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow})")
+
+            if self.p.live_trading and candle_direction_ok and cross_any and not signal_valid:
+                current_angle = self._angle() if self.p.long_use_angle_filter else float('nan')
+                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                self._lifecycle_debug(
+                    f"phase1 LONG blocked filters | ema_order={self.p.long_use_ema_order_condition} "
+                    f"price_filter={self.p.long_use_price_filter_ema} ema_pos_filter={self.p.long_use_ema_below_price_filter} "
+                    f"angle_filter={self.p.long_use_angle_filter} angle={current_angle:.2f} range=[{self.p.long_min_angle:.1f},{self.p.long_max_angle:.1f}] "
+                    f"atr_filter={self.p.long_use_atr_filter} atr={current_atr:.6f} range=[{self.p.long_atr_min_threshold:.6f},{self.p.long_atr_max_threshold:.6f}]")
 
         # Check SHORT signals
         if self.p.enable_short_trades:
@@ -1114,6 +1189,8 @@ class ITradingStrategy(bt.Strategy):
             candle_direction_ok = True
             if self.p.short_use_candle_direction_filter:
                 candle_direction_ok = prev_bear
+
+            signal_valid = False
 
             if candle_direction_ok and cross_any:
                 # Apply additional filters
@@ -1162,7 +1239,23 @@ class ITradingStrategy(bt.Strategy):
                     # ✅ CRITICAL FIX: Store ATR when SHORT signal is detected
                     current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                     self.signal_detection_atr = current_atr
+                    self._lifecycle_debug(
+                        f"phase1 SHORT pass | cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow}) "
+                        f"| prev_bear={prev_bear} | atr={current_atr:.6f}")
                     return 'SHORT'
+            elif self.p.live_trading:
+                self._lifecycle_debug(
+                    f"phase1 SHORT blocked | candle_ok={candle_direction_ok} prev_bear={prev_bear} "
+                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow})")
+
+            if self.p.live_trading and candle_direction_ok and cross_any and not signal_valid:
+                current_angle = self._angle() if self.p.short_use_angle_filter else float('nan')
+                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                self._lifecycle_debug(
+                    f"phase1 SHORT blocked filters | ema_order={self.p.short_use_ema_order_condition} "
+                    f"price_filter={self.p.short_use_price_filter_ema} ema_pos_filter={self.p.short_use_ema_above_price_filter} "
+                    f"angle_filter={self.p.short_use_angle_filter} angle={current_angle:.2f} range=[{self.p.short_min_angle:.1f},{self.p.short_max_angle:.1f}] "
+                    f"atr_filter={self.p.short_use_atr_filter} atr={current_atr:.6f} range=[{self.p.short_atr_min_threshold:.6f},{self.p.short_atr_max_threshold:.6f}]")
 
         return None
 
@@ -1200,12 +1293,18 @@ class ITradingStrategy(bt.Strategy):
                 if self.p.print_signals:
                     print(
                         f"PULLBACK CONFIRMED: {armed_direction} pullback complete ({self.pullback_candle_count} candles)")
+                self._lifecycle_debug(
+                    f"phase2 {armed_direction} pass | pullback_count={self.pullback_candle_count}/{max_candles} "
+                    f"| high={self.last_pullback_candle_high:.5f} low={self.last_pullback_candle_low:.5f}")
                 return True
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} waiting | pullback_count={self.pullback_candle_count}/{max_candles}")
         else:
             # Non-pullback candle - apply Global Invalidation Rule
             # Reset to scanning if we get a candle that breaks the pullback pattern
             if self.p.print_signals:
                 print(f"PULLBACK INVALIDATED: {armed_direction} non-pullback candle detected, resetting to SCANNING")
+            self._lifecycle_debug(f"phase2 {armed_direction} invalidated | non-pullback candle")
             self._reset_entry_state()
 
         return False
@@ -1276,10 +1375,13 @@ class ITradingStrategy(bt.Strategy):
 
         # Check if window is active yet
         if current_bar < self.window_bar_start:
+            self._lifecycle_debug(
+                f"phase4 {armed_direction} waiting start | bar={current_bar} window_start={self.window_bar_start}")
             return None  # Not yet active, do nothing
 
         # Check for Timeout
         if current_bar > self.window_expiry_bar:
+            expiry_bar = self.window_expiry_bar
             if self.p.print_signals:
                 print(f"WINDOW TIMEOUT ({armed_direction}): No breakout occurred. Resetting to ARMED.")
             self.entry_state = f"ARMED_{armed_direction}"  # Return to pullback search
@@ -1287,6 +1389,8 @@ class ITradingStrategy(bt.Strategy):
             # Clear window variables
             self.window_top_limit, self.window_bottom_limit, self.window_expiry_bar = None, None, None
             self.window_breakout_level = None
+            self._lifecycle_debug(
+                f"phase4 {armed_direction} timeout | bar={current_bar} expiry={expiry_bar}")
             return None
 
         # Check Window Boundaries
@@ -1303,6 +1407,7 @@ class ITradingStrategy(bt.Strategy):
 
             # Check for FAILURE condition (break below bottom_limit - indicates instability)
             elif current_low <= self.window_bottom_limit:
+                failed_bottom = self.window_bottom_limit
                 if self.p.print_signals:
                     print(
                         f"FAILURE BREAKOUT (LONG): Price {current_low:.5f} broke below failure level {self.window_bottom_limit:.5f}. Instability detected.")
@@ -1310,6 +1415,8 @@ class ITradingStrategy(bt.Strategy):
                 self.pullback_candle_count = 0
                 self.window_top_limit, self.window_bottom_limit, self.window_expiry_bar = None, None, None
                 self.window_breakout_level = None
+                self._lifecycle_debug(
+                    f"phase4 LONG failed boundary | low={current_low:.5f} <= bottom={failed_bottom}")
                 return None
 
         elif armed_direction == 'SHORT':
@@ -1322,6 +1429,7 @@ class ITradingStrategy(bt.Strategy):
 
             # Check for FAILURE condition (break above top_limit - indicates instability)
             elif current_high >= self.window_top_limit:
+                failed_top = self.window_top_limit
                 if self.p.print_signals:
                     print(
                         f"FAILURE BREAKOUT (SHORT): Price {current_high:.5f} broke above failure level {self.window_top_limit:.5f}. Instability detected.")
@@ -1329,25 +1437,39 @@ class ITradingStrategy(bt.Strategy):
                 self.pullback_candle_count = 0
                 self.window_top_limit, self.window_bottom_limit, self.window_expiry_bar = None, None, None
                 self.window_breakout_level = None
+                self._lifecycle_debug(
+                    f"phase4 SHORT failed boundary | high={current_high:.5f} >= top={failed_top}")
                 return None
 
+        self._lifecycle_debug(
+            f"phase4 {armed_direction} waiting breakout | high={current_high:.5f} low={current_low:.5f} "
+            f"| top={self.window_top_limit} bottom={self.window_bottom_limit} expiry={self.window_expiry_bar}")
         return None  # No breakout yet, continue monitoring
 
     def next(self):
         """Main strategy logic using volatility expansion channel entry system with 4-phase state machine"""
-        # In live mode, only process the last bar of the dataset
-        if self.p.live_trading and (self.data_len == 0 or len(self) < self.data_len):
-            return
+        # --- Lifecycle Logger: fires only on the very first next() call ---
+        if self.p.lifecycle_logging and not self._first_next_logged:
+            _dt0 = bt.num2date(self.data.datetime[0])
+            print(f"[LIFECYCLE] next#1 (first call) | bar={len(self)} | dt={_dt0:%Y-%m-%d %H:%M} | close={float(self.data.close[0]):.5f} | entry_state={self.entry_state} | live={self.p.live_trading}")
+            self._first_next_logged = True
 
-        # In live mode, do not execute logic if there is already a position.
-        # The runner is responsible for managing the single live position.
-        if self.p.live_trading and self.position:
-            return
-
+        # CRITICAL: In live mode, we need to process ALL bars to warm up indicators,
+        # then only emit signals from the LAST bar (current 5-min bar)
+        # This ensures indicators have sufficient historical context
+        
         # Track portfolio value and timestamp for plotting
         if hasattr(self, '_portfolio_values'):
             self._portfolio_values.append(self.broker.get_value())
             self._timestamps.append(self.data.datetime.datetime(0))
+
+        # LIVE MODE: Skip position management during warm-up, only analyze on final bar
+        # We'll check for position only on the last bar where signals are actually emitted
+        if self.p.live_trading and self.position and len(self) != len(self.data):
+            # During warm-up and not on the last bar - skip all position logic
+            self._lifecycle_debug(
+                f"next skip warmup-position | bar={len(self)} total={self.data.buflen()} state={self.entry_state}")
+            return
 
         # RESET exit flag at start of each new bar
         self.exit_this_bar = False
@@ -1360,12 +1482,21 @@ class ITradingStrategy(bt.Strategy):
                 print("DEBUG: Close operation completed, clearing pending_close flag")
             else:
                 # Still waiting for close to complete
+                self._lifecycle_debug("next skip pending-close | waiting for position to close")
                 return
 
         # Track current bar information
         dt = bt.num2date(self.data.datetime[0])
         current_bar = len(self)
+
+        # In live runs, skip replay bars that are already processed in prior cycles.
+        if self.p.live_trading and self.p.live_cutoff_dt is not None and dt <= self.p.live_cutoff_dt:
+            self._lifecycle_debug(
+                f"next skip cutoff | dt={dt:%Y-%m-%d %H:%M:%S} <= cutoff={self.p.live_cutoff_dt:%Y-%m-%d %H:%M:%S}")
+            return
+
         current_close = float(self.data.close[0])
+        print(f"[Current Bar] Datetime: {dt.strftime('%Y-%m-%d %H:%M:%S')} | Closing Price: {current_close}")
 
         # Track position state changes
         if self.position:
@@ -1410,6 +1541,7 @@ class ITradingStrategy(bt.Strategy):
 
         # Check if we have pending ENTRY orders (but allow protective orders)
         if self.order:
+            self._lifecycle_debug(f"next skip pending-entry-order | ref={getattr(self.order, 'ref', None)}")
             return  # Wait for entry order to complete before doing anything else
 
         # =====================================================================
@@ -1423,6 +1555,8 @@ class ITradingStrategy(bt.Strategy):
             position_direction = 'LONG' if self.position.size > 0 else 'SHORT'
 
             # Continue holding - no new entry logic when in position
+            self._lifecycle_debug(
+                f"next skip in-position | direction={position_direction} bars_since_entry={bars_since_entry}")
             return
 
         # =====================================================================
@@ -1433,6 +1567,7 @@ class ITradingStrategy(bt.Strategy):
         if self.exit_this_bar:
             if self.p.print_signals:
                 print(f"SKIP entry: exit action already taken this bar")
+            self._lifecycle_debug("next skip exit-this-bar")
             return
 
         # =====================================================================
@@ -1510,6 +1645,8 @@ class ITradingStrategy(bt.Strategy):
                         f"   Signal detection candle: close[-1]={self.data.close[-1]:.5f} open[-1]={self.data.open[-1]:.5f}")
                     print(f"   Bearish previous candle: {self.data.close[-1] < self.data.open[-1]}")
                     print(f"   Starting pullback confirmation phase...")
+            else:
+                self._lifecycle_debug("no-signal | phase1 returned None (state=SCANNING)")
 
         elif self.entry_state in ["ARMED_LONG", "ARMED_SHORT"]:
             # PHASE 2: Confirm pullback
@@ -1524,6 +1661,9 @@ class ITradingStrategy(bt.Strategy):
                     print(
                         f"   Bearish previous candle: {self.data.close[-1] < self.data.open[-1]} (required for SHORT)")
                     print(f"   Pullback complete, window monitoring begins...")
+            else:
+                self._lifecycle_debug(
+                    f"no-signal | phase2 not ready (state={self.entry_state} armed={self.armed_direction} pullback_count={self.pullback_candle_count})")
 
         elif self.entry_state == "WINDOW_OPEN":
             # PHASE 4: Monitor window for breakout
@@ -1537,6 +1677,8 @@ class ITradingStrategy(bt.Strategy):
                         print(
                             f"❌ ENTRY BLOCKED: Breakout detected but outside trading hours - {dt.hour:02d}:{dt.minute:02d} outside {self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d} UTC")
                     self._reset_entry_state()
+                    self._lifecycle_debug(
+                        f"entry blocked time-filter | dt={dt:%H:%M} window=[{self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d}]")
                     return
 
                 # EXECUTE ENTRY
@@ -1602,6 +1744,7 @@ class ITradingStrategy(bt.Strategy):
                             print(
                                 f"❌ LONG ENTRY BLOCKED: Previous candle is not bullish (close[-1]={trigger_close:.5f} open[-1]={trigger_open:.5f} body={candle_body:.5f})")
                         self._reset_entry_state()
+                        self._lifecycle_debug("entry blocked candle-filter | direction=LONG")
                         return
 
                 elif signal_direction == 'SHORT' and self.p.short_use_candle_direction_filter:
@@ -1615,6 +1758,7 @@ class ITradingStrategy(bt.Strategy):
                             print(
                                 f"   🚨 ERROR: SHORT entry attempted after BULLISH candle! This violates strategy rules!")
                         self._reset_entry_state()
+                        self._lifecycle_debug("entry blocked candle-filter | direction=SHORT")
                         return
 
                 # 🔧 CRITICAL FIX: Validate ALL entry filters BEFORE any entry execution
@@ -1623,12 +1767,14 @@ class ITradingStrategy(bt.Strategy):
                         if self.p.print_signals:
                             print(f"❌ ENTRY BLOCKED: LONG entry validation failed (angle/ATR filters)")
                         self._reset_entry_state()
+                        self._lifecycle_debug("entry blocked post-breakout filters | direction=LONG")
                         return
                 elif signal_direction == 'SHORT':
                     if not self._validate_all_short_entry_filters():
                         if self.p.print_signals:
                             print(f"❌ ENTRY BLOCKED: SHORT entry validation failed (angle/ATR filters)")
                         self._reset_entry_state()
+                        self._lifecycle_debug("entry blocked post-breakout filters | direction=SHORT")
                         return
 
                 if self.p.print_signals:
@@ -1642,12 +1788,15 @@ class ITradingStrategy(bt.Strategy):
                         print(
                             f"❌ ENTRY BLOCKED: {signal_direction} entry rejected - {dt.hour:02d}:{dt.minute:02d} outside {self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d} UTC")
                     self._reset_entry_state()
+                    self._lifecycle_debug(
+                        f"entry blocked final-time-filter | direction={signal_direction} dt={dt:%H:%M}")
                     return
 
                 # Calculate position size and create order
                 atr_now = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                 if atr_now <= 0:
                     self._reset_entry_state()
+                    self._lifecycle_debug(f"entry blocked atr<=0 | atr={atr_now:.6f}")
                     return
 
                 entry_price = float(self.data.close[0])
@@ -1671,6 +1820,7 @@ class ITradingStrategy(bt.Strategy):
                     
                     if units is None or units <= 0:
                         self._reset_entry_state()
+                        self._lifecycle_debug(f"entry blocked sizing | units={units}")
                         return
                     bt_size = units
                 else:
@@ -1679,10 +1829,21 @@ class ITradingStrategy(bt.Strategy):
 
                 if bt_size <= 0:
                     self._reset_entry_state()
+                    self._lifecycle_debug(f"entry blocked bt_size<=0 | bt_size={bt_size}")
                     return
 
                 # --- LIVE TRADING SIGNAL vs BACKTESTING ORDER ---
                 if self.p.live_trading:
+                    # CRITICAL: In live mode, only emit signals from the LAST bar (current 5-minute bar)
+                    # This ensures all historical bars processed for indicator warm-up,
+                    # and signals only generated from the current market state
+                    if len(self) != len(self.data):
+                        # Not the last bar yet - just continue warming up indicators
+                        self._reset_entry_state()
+                        self._lifecycle_debug(
+                            f"entry suppressed live warmup | bar={len(self)} total={self.data.buflen()}")
+                        return
+                    
                     # In live mode, put a signal on the queue instead of placing an order
                     if self.p.signal_queue is not None:
                         signal = {
@@ -1693,6 +1854,8 @@ class ITradingStrategy(bt.Strategy):
                         }
                         self.p.signal_queue.put(signal)
                         print(f"📬 SIGNAL EMITTED: {signal_direction} size={bt_size} SL={self.stop_level:.5f} TP={self.take_level:.5f}")
+                        self._lifecycle_debug(
+                            f"signal emitted | direction={signal_direction} size={bt_size} sl={self.stop_level:.5f} tp={self.take_level:.5f}")
                 else:
                     # In backtest mode, place the order as usual
                     if signal_direction == 'LONG':
@@ -1738,6 +1901,9 @@ class ITradingStrategy(bt.Strategy):
 
                 # Reset signal tracking variables AFTER trade recording is complete
                 self._reset_signal_tracking()
+            else:
+                self._lifecycle_debug(
+                    f"no-signal | phase4 breakout_status={breakout_status} state={self.entry_state} armed={self.armed_direction}")
 
     def _full_entry_signal(self):
         """Return tuple (signal_type, has_signal) for entry constraints.
@@ -2601,6 +2767,10 @@ class ITradingStrategy(bt.Strategy):
         """Enhanced order notification with robust OCA group for SL/TP supporting both LONG and SHORT positions."""
         dt = bt.num2date(self.data.datetime[0])
 
+        if self.p.lifecycle_logging:
+            _exec_price = order.executed.price if order.status == order.Completed else 0.0
+            print(f"[LIFECYCLE] notify_order | ref={order.ref} | status={order.getstatusname()} | action={'BUY' if order.isbuy() else 'SELL'} | exec_price={_exec_price:.5f} | dt={dt:%Y-%m-%d %H:%M}")
+
         if order.status in [order.Submitted, order.Accepted]:
             return
 
@@ -2705,6 +2875,9 @@ class ITradingStrategy(bt.Strategy):
     def notify_trade(self, trade):
         """Use Backtrader's proper trade notification for accurate PnL tracking"""
 
+        if self.p.lifecycle_logging:
+            print(f"[LIFECYCLE] notify_trade | ref={trade.ref} | closed={trade.isclosed} | pnl={trade.pnlcomm:.2f} | size={trade.size} | price={trade.price:.5f}")
+
         if not trade.isclosed:
             return
 
@@ -2797,6 +2970,12 @@ class ITradingStrategy(bt.Strategy):
             self._reset_pullback_state()
 
     def stop(self):
+        # Preserve live state before any end-of-run cleanup.
+        self._persist_live_state_snapshot()
+
+        if self.p.lifecycle_logging:
+            print(f"[LIFECYCLE] stop | trades={self.trades} | wins={self.wins} | losses={self.losses} | gross_profit={self.gross_profit:.2f} | gross_loss={self.gross_loss:.2f} | final_value={self.broker.get_value():.2f}")
+
         # Close any open positions at strategy end and manually process the trade
         if self.position:
             current_price = self.data.close[0]

@@ -1,11 +1,11 @@
 import asyncio
 import json
+import queue
 import sys
 from pathlib import Path
 import backtrader as bt
 import pandas as pd
 from ib_async import IB, Forex, util, Order
-from datetime import datetime
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -20,6 +20,74 @@ last_processed_time = None
 historical_df = None
 active_tasks = set()
 g_last_tick_info = None
+last_live_processed_dt = None
+live_strategy_state = None
+
+
+def _normalize_ib_bars_df(df, source_name):
+    """Normalize IB dataframe schema and datetime index for Backtrader feeds."""
+    if df is None or df.empty:
+        return df
+
+    normalized = df.copy()
+
+    # RealTimeBar frames may expose open_ instead of open.
+    if 'open_' in normalized.columns and 'open' not in normalized.columns:
+        normalized.rename(columns={'open_': 'open'}, inplace=True)
+
+    dt_col = 'date' if 'date' in normalized.columns else ('time' if 'time' in normalized.columns else None)
+
+    if dt_col:
+        normalized[dt_col] = pd.to_datetime(normalized[dt_col], utc=True, errors='coerce')
+        normalized = normalized.dropna(subset=[dt_col])
+        normalized.set_index(dt_col, inplace=True)
+    else:
+        normalized.index = pd.to_datetime(normalized.index, utc=True, errors='coerce')
+        normalized = normalized[~normalized.index.isna()]
+
+    # Backtrader is generally happiest with naive UTC datetimes.
+    if getattr(normalized.index, 'tz', None) is not None:
+        normalized.index = normalized.index.tz_convert(None)
+
+    normalized.index = normalized.index.round('us')
+    normalized.sort_index(inplace=True)
+
+    suspicious = normalized.index < pd.Timestamp('2000-01-01')
+    if suspicious.any():
+        suspicious_count = int(suspicious.sum())
+        logger.warning(
+            f"Dropping {suspicious_count} suspicious {source_name} bars with pre-2000 datetime (likely bad index mapping).")
+        normalized = normalized[~suspicious]
+
+    return normalized
+
+
+def _to_latest_5min_bar(live_df):
+    """Convert realtime 5-second bars to the latest completed 5-minute OHLCV bar."""
+    if live_df is None or live_df.empty:
+        return live_df
+
+    agg = {}
+    if 'open' in live_df.columns:
+        agg['open'] = 'first'
+    if 'high' in live_df.columns:
+        agg['high'] = 'max'
+    if 'low' in live_df.columns:
+        agg['low'] = 'min'
+    if 'close' in live_df.columns:
+        agg['close'] = 'last'
+    if 'volume' in live_df.columns:
+        agg['volume'] = 'sum'
+
+    if not {'open', 'high', 'low', 'close'}.issubset(set(agg.keys())):
+        logger.warning("Live dataframe is missing OHLC columns; skipping this cycle.")
+        return pd.DataFrame()
+
+    live_5min = live_df.resample('5min').agg(agg).dropna(subset=['open', 'high', 'low', 'close'])
+    if live_5min.empty:
+        return live_5min
+
+    return live_5min.tail(1)
 
 def load_params():
     """Loads parameters from the JSON config file."""
@@ -79,15 +147,16 @@ def on_bar_update(bars, has_new_bar):
     current_time = latest_bar.time
     
     # Print live ticks as they come in
-    current_tick_info = (current_time, latest_bar.close, latest_bar.open_, latest_bar.high, latest_bar.low, latest_bar.volume)
+    current_tick_info = (current_time, latest_bar.close, latest_bar.open_, latest_bar.high, latest_bar.low)
     if current_tick_info != g_last_tick_info:
-        print(f"[Live Tick] {current_time.strftime('%Y-%m-%d %H:%M:%S')} | Open Price: {latest_bar.open_} | High: {latest_bar.high} | Low: {latest_bar.low} | Closing Price: {latest_bar.close}| Volume: {latest_bar.volume}")
+        print(f"[Live Tick] {current_time.strftime('%Y-%m-%d %H:%M:%S')} | Open Price: {latest_bar.open_} | High: {latest_bar.high} | Low: {latest_bar.low} | Closing Price: {latest_bar.close}")
         g_last_tick_info = current_tick_info
 
-    # Trigger analysis only on 5-minute boundaries
-    if current_time.minute % 5 == 0 and current_time.second == 0:
-        if current_time == last_processed_time:
-            return
+    # More robust boundary check
+    if last_processed_time is None or (current_time.minute // 5) != (last_processed_time.minute // 5):
+        if last_processed_time and current_time.minute == last_processed_time.minute:
+            return # Already processed this interval
+        
         last_processed_time = current_time
         logger.info(f"🎯 5-Minute Boundary Reached: {current_time} | Price: {latest_bar.close}")
         
@@ -96,52 +165,95 @@ def on_bar_update(bars, has_new_bar):
         active_tasks.add(task)
         task.add_done_callback(active_tasks.discard)
 
+
 async def run_strategy_on_live_bar(live_bars):
-    """Runs a fresh cerebro instance on the latest data for live trading."""
-    global historical_df
+    """Runs strategy analysis on the latest 5-minute bar for live trading.
+    
+    This function:
+    1. Combines historical data (already warmed up) with new live bars
+    2. Runs strategy ONCE on the complete dataset to generate a signal
+    3. Signal is emitted to queue if conditions are met
+    4. No orders are placed here - only signals are generated
+    """
+    global historical_df, last_live_processed_dt, live_strategy_state
     logger.info("--- Analyzing new 5-minute interval with ITradingStrategy (Live Mode) ---")
     params = load_params()
     
-    live_df = util.df(live_bars)
+    live_df = _normalize_ib_bars_df(util.df(live_bars), 'live')
     if live_df is None or live_df.empty:
         logger.warning("Live DataFrame is empty. Skipping.")
         return
 
-    # Combine historical and live data
-    combined_df = pd.concat([historical_df, live_df]) if historical_df is not None else live_df
-    combined_df = combined_df[~combined_df.index.duplicated(keep='last')]
-    
-    # Take a slice of the last 200 bars for indicator warm-up
-    data_slice = combined_df.iloc[-200:]
-    data_slice.index = pd.to_datetime(data_slice.index, utc=True).round('us')
+    # Align realtime 5-second stream with strategy's 5-minute bar logic.
+    live_df = _to_latest_5min_bar(live_df)
+    if live_df is None or live_df.empty:
+        logger.info("No completed 5-minute live bar available yet. Skipping this cycle.")
+        return
 
-    signal_queue = asyncio.Queue()
+    # =====================================================================
+    # CRITICAL: Combine historical data with current live bar
+    # This preserves indicator warm-up from historical analysis
+    # =====================================================================
+    if historical_df is None or historical_df.empty:
+        logger.warning("Historical data not available. Cannot analyze live bars.")
+        return
+    
+    # Combine: historical (provides warm-up) + new live bar (current analysis)
+    combined_df = pd.concat([historical_df, live_df])
+    combined_df = combined_df[~combined_df.index.duplicated(keep='last')]  # Remove duplicates, keep latest
+    
+    # =====================================================================
+    # CRITICAL: Use sufficient historical context for indicator calculation
+    # ATR(10), EMA(40) and other indicators need historical bars to warm up
+    # Keep last 300 bars (1-2 days of 5-min bars) for robust calculation
+    # =====================================================================
+    data_for_analysis = combined_df.iloc[-300:] if len(combined_df) > 300 else combined_df
+    data_for_analysis = _normalize_ib_bars_df(data_for_analysis, 'combined')
+    if data_for_analysis is None or data_for_analysis.empty:
+        logger.warning("Combined DataFrame is empty after datetime normalization. Skipping.")
+        return
+
+    signal_queue = queue.Queue()  # thread-safe queue; strategy runs in worker thread via asyncio.to_thread
     cerebro = bt.Cerebro(stdstats=False)
     
-    # Add the sliced data and resample it to 5 minutes
-    data_feed = bt.feeds.PandasData(dataname=data_slice)
-    cerebro.resampledata(data_feed, timeframe=bt.TimeFrame.Minutes, compression=5)
+    # Add data WITHOUT resampling - already at 5-minute bars
+    data_feed = bt.feeds.PandasData(dataname=data_for_analysis)
+    cerebro.adddata(data_feed)
     
     cerebro.broker.setcash(params['STARTING_CASH'])
     
+    # Pass signal queue and live_trading=True to strategy
+    # Strategy will emit signals instead of placing orders
     cerebro.addstrategy(
         ITradingStrategy,
         live_trading=True,
         signal_queue=signal_queue,
+        live_cutoff_dt=last_live_processed_dt,
+        live_state_in=live_strategy_state,
         **params['STRATEGY_PARAMS']
     )
 
     try:
-        await asyncio.to_thread(cerebro.run)
-        signal = await asyncio.wait_for(signal_queue.get(), timeout=10.0)
-        logger.info(f"✅ Signal received from strategy: {signal}")
-        contract = Forex(params['FOREX_INSTRUMENT'])
-        await ib.qualifyContractsAsync(contract)
-        await execute_live_trade(contract, signal, params)
-    except asyncio.QueueEmpty:
-        logger.info("No signal generated in this cycle.")
-    except asyncio.TimeoutError:
-        logger.info("No signal generated within the timeout period.")
+        # Run strategy synchronously
+        run_results = await asyncio.to_thread(cerebro.run)
+
+        # Persist strategy state so next cycle continues from current live context.
+        if run_results:
+            live_strategy_state = getattr(run_results[0], 'live_state_snapshot', live_strategy_state)
+
+        latest_live_dt = live_df.index.max().to_pydatetime()
+        last_live_processed_dt = latest_live_dt
+        
+        # Try to get signal from queue with short timeout
+        # The strategy.next() method will emit to queue if conditions are met
+        try:
+            signal = signal_queue.get_nowait()  # Non-blocking get
+            logger.info(f"✅ Signal received from strategy: {signal}")
+            contract = Forex(params['FOREX_INSTRUMENT'])
+            await ib.qualifyContractsAsync(contract)
+            await execute_live_trade(contract, signal, params)
+        except queue.Empty:
+            logger.info("No signal generated in this analysis cycle (all conditions not met).")
     except Exception as e:
         logger.error(f"An error occurred during live strategy execution: {e}", exc_info=True)
 
@@ -162,9 +274,10 @@ async def run_historical_analysis(params):
         logger.error("❌ No historical data received for warm-up. Exiting.")
         return False
 
-    historical_df = util.df(bars)
-    historical_df.set_index('date', inplace=True)
-    historical_df.index = historical_df.index.round('us')
+    historical_df = _normalize_ib_bars_df(util.df(bars), 'historical')
+    if historical_df is None or historical_df.empty:
+        logger.error("❌ Historical data normalization failed. Exiting.")
+        return False
 
     cerebro = bt.Cerebro(stdstats=False)
     data = bt.feeds.PandasData(dataname=historical_df)
@@ -184,6 +297,10 @@ async def run_historical_analysis(params):
 
 async def run_bot():
     """Core logic: connect, run historical analysis, then switch to live trading."""
+    global last_live_processed_dt, live_strategy_state
+    last_live_processed_dt = None
+    live_strategy_state = None
+
     params = load_params()
     
     await ib.connectAsync(params['IB_HOST'], params['IB_PORT'], clientId=params['IB_CLIENT_ID'])
