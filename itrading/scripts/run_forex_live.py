@@ -227,6 +227,18 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _strategy_params_without_runtime_overrides(params: dict) -> dict:
+    """Return strategy params with runtime-owned keys removed.
+
+    These keys are passed explicitly by the runner and must not be duplicated in
+    STRATEGY_PARAMS (otherwise Cerebro.addstrategy gets duplicate kwargs).
+    """
+    strategy_params = dict((params or {}).get('STRATEGY_PARAMS') or {})
+    for key in ('live_trading', 'signal_queue', 'live_cutoff_dt', 'live_state_in'):
+        strategy_params.pop(key, None)
+    return strategy_params
+
+
 def _parse_signal_bar_time(signal: dict) -> Optional[datetime]:
     """Parse strategy-emitted signal bar time into a naive UTC datetime for comparisons."""
     raw_value = signal.get('signal_bar_time')
@@ -594,13 +606,14 @@ async def run_strategy_on_live_bar(live_bars):
     
     # Pass signal queue and live_trading=True to strategy
     # Strategy will emit signals instead of placing orders
+    strategy_params = _strategy_params_without_runtime_overrides(params)
     cerebro.addstrategy(
         active_strategy_class,
         live_trading=True,
         signal_queue=signal_queue,
         live_cutoff_dt=last_live_processed_dt,
         live_state_in=live_strategy_state,
-        **params['STRATEGY_PARAMS']
+        **strategy_params
     )
 
     try:
@@ -681,10 +694,11 @@ async def run_historical_analysis(params):
     data = bt.feeds.PandasData(dataname=historical_df)
     cerebro.resampledata(data, timeframe=bt.TimeFrame.Minutes, compression=5)
     
+    strategy_params = _strategy_params_without_runtime_overrides(params)
     cerebro.addstrategy(
         active_strategy_class,
         live_trading=False,
-        **params['STRATEGY_PARAMS']
+        **strategy_params
     )
     
     cerebro.broker.setcash(params['STARTING_CASH'])

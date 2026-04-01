@@ -11,6 +11,12 @@
   "STRATEGY_MODULE": "itrading.src.strategy",
   "STRATEGY_CLASS": "ITradingStrategyAUDUSD",
   "STRATEGY_PARAMS": {
+    "dataname": null,
+    "live_trading": false,
+    "signal_queue": null,
+    "live_cutoff_dt": null,
+    "live_state_in": null,
+    "size": 1,
     "enable_long_trades": true,
     "enable_short_trades": true,
     "long_use_pullback_entry": true,
@@ -82,8 +88,12 @@
     "instrument_name": "AUDUSD",
     "use_forex_position_calc": true,
     "contract_size": 100000,
+    "min_exchange_units": 2500,
+    "forex_base_currency": "AUD",
+    "forex_quote_currency": "USD",
     "forex_pip_value": 0.0001,
     "forex_pip_decimal_places": 5,
+    "forex_jpy_rate": 152.0,
     "forex_spread_pips": 2.2,
     "forex_margin_required": 3.33,
     "account_currency": "USD",
@@ -94,6 +104,3 @@
     "lifecycle_logging": true
   }
 }
-
-
-

@@ -11,6 +11,12 @@
   "STRATEGY_MODULE": "itrading.src.strategy",
   "STRATEGY_CLASS": "ITradingStrategyUSDJPY",
   "STRATEGY_PARAMS": {
+    "dataname": null,
+    "live_trading": false,
+    "signal_queue": null,
+    "live_cutoff_dt": null,
+    "live_state_in": null,
+    "size": 1,
     "enable_long_trades": true,
     "enable_short_trades": false,
     "long_use_pullback_entry": true,
@@ -77,6 +83,7 @@
     "instrument_name": "USDJPY",
     "use_forex_position_calc": true,
     "contract_size": 100000,
+    "min_exchange_units": 2500,
     "forex_base_currency": "USD",
     "forex_quote_currency": "JPY",
     "forex_pip_value": 0.01,
@@ -92,4 +99,3 @@
     "lifecycle_logging": true
   }
 }
-
