@@ -956,8 +956,8 @@ class ITradingStrategy(bt.Strategy):
             try:
                 # Create reports directory if it doesn't exist
                 from pathlib import Path
-                report_dir = Path(__file__).resolve().parent.parent / 'reports'
-                report_dir.mkdir(exist_ok=True)
+                report_root = Path(__file__).resolve().parent.parent / 'reports'
+                report_root.mkdir(exist_ok=True)
 
                 # Extract asset name from data filename or instrument parameter
                 asset_name = "UNKNOWN"
@@ -967,7 +967,9 @@ class ITradingStrategy(bt.Strategy):
                 elif hasattr(self.p, 'instrument_name') and self.p.instrument_name:
                     asset_name = self.p.instrument_name
 
-                # Create trade report filename with timestamp
+                # Create per-instrument report directory and report filename with timestamp
+                report_dir = report_root / asset_name
+                report_dir.mkdir(exist_ok=True)
                 from datetime import datetime
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 report_filename = f"{asset_name}_trades_{timestamp}.txt"
@@ -3075,3 +3077,11 @@ class ITradingStrategy(bt.Strategy):
             print("DEBUG: All pending orders cancelled")
         except Exception as e:
             print(f"Error cancelling orders: {e}")
+
+
+class ITradingStrategyAUDUSD(ITradingStrategy):
+    """Instrument-specific alias for AUDUSD deployment profiles."""
+    params = (
+        ('instrument_name', 'AUDUSD'),
+    )
+

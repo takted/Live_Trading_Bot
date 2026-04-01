@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import json
 import os
 import queue
@@ -16,7 +17,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from itrading.src.logger import ITradingLogger
 from itrading.src.live_lifecycle_bridge import LiveLifecycleBridge
-from itrading.src.strategy import ITradingStrategy
+from itrading.src.strategy import ITradingStrategy as DefaultITradingStrategy
 
 # --- Global Configuration ---
 ib = IB()
@@ -29,6 +30,25 @@ last_live_processed_dt = None
 live_strategy_state = None
 live_lifecycle_bridge: Optional[LiveLifecycleBridge] = None
 last_bt_cycle_summary: Optional[dict] = None
+active_strategy_class = DefaultITradingStrategy
+active_strategy_label = "itrading.src.strategy.ITradingStrategy"
+
+
+def resolve_strategy_class(params: dict):
+    """Resolve strategy class from params with fallback to the default strategy."""
+    module_name = str(params.get('STRATEGY_MODULE', 'itrading.src.strategy')).strip() or 'itrading.src.strategy'
+    class_name = str(params.get('STRATEGY_CLASS', 'ITradingStrategy')).strip() or 'ITradingStrategy'
+    label = f"{module_name}.{class_name}"
+
+    try:
+        module = importlib.import_module(module_name)
+        strategy_cls = getattr(module, class_name)
+        return strategy_cls, label
+    except Exception as exc:
+        fallback_label = "itrading.src.strategy.ITradingStrategy"
+        logger.warning(
+            f"Could not load configured strategy {label}: {exc}. Falling back to {fallback_label}.")
+        return DefaultITradingStrategy, fallback_label
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -358,7 +378,8 @@ async def run_strategy_on_live_bar(live_bars):
     4. No orders are placed here - only signals are generated
     """
     global historical_df, last_live_processed_dt, live_strategy_state, last_bt_cycle_summary
-    logger.info("--- Analyzing new 5-minute interval with ITradingStrategy (Live Mode) ---")
+    strategy_label = globals().get('active_strategy_label', 'itrading.src.strategy.ITradingStrategy')
+    logger.info(f"--- Analyzing new 5-minute interval with {strategy_label} (Live Mode) ---")
     params = load_params()
     
     live_df = _normalize_ib_bars_df(util.df(live_bars), 'live')
@@ -409,7 +430,7 @@ async def run_strategy_on_live_bar(live_bars):
     # Pass signal queue and live_trading=True to strategy
     # Strategy will emit signals instead of placing orders
     cerebro.addstrategy(
-        ITradingStrategy,
+        active_strategy_class,
         live_trading=True,
         signal_queue=signal_queue,
         live_cutoff_dt=last_live_processed_dt,
@@ -471,8 +492,9 @@ async def run_strategy_on_live_bar(live_bars):
 async def run_historical_analysis(params):
     """Runs the strategy on historical data to warm up and generate a report."""
     global historical_df
-    logger.info("--- Running strategy on historical data (no orders) to warm up... ---")
-    
+    strategy_label = globals().get('active_strategy_label', 'itrading.src.strategy.ITradingStrategy')
+    logger.info(f"--- Running {strategy_label} on historical data (no orders) to warm up... ---")
+
     contract = Forex(params['FOREX_INSTRUMENT'])
     await ib.qualifyContractsAsync(contract)
 
@@ -495,7 +517,7 @@ async def run_historical_analysis(params):
     cerebro.resampledata(data, timeframe=bt.TimeFrame.Minutes, compression=5)
     
     cerebro.addstrategy(
-        ITradingStrategy,
+        active_strategy_class,
         live_trading=False,
         **params['STRATEGY_PARAMS']
     )
@@ -509,11 +531,14 @@ async def run_historical_analysis(params):
 async def run_bot():
     """Core logic: connect, run historical analysis, then switch to live trading."""
     global last_live_processed_dt, live_strategy_state, live_lifecycle_bridge, last_bt_cycle_summary
+    global active_strategy_class, active_strategy_label
     last_live_processed_dt = None
     live_strategy_state = None
     last_bt_cycle_summary = None
 
     params = load_params()
+    active_strategy_class, active_strategy_label = resolve_strategy_class(params)
+    logger.info(f"Using strategy: {active_strategy_label}")
     strategy_params = params.get('STRATEGY_PARAMS', {})
     pip_value = strategy_params.get('forex_pip_value', 0.0001)
     live_lifecycle_bridge = LiveLifecycleBridge(logger=logger, pip_value=float(pip_value))

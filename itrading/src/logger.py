@@ -3,6 +3,7 @@ Enhanced logging for trading operations.
 """
 import logging
 import json
+import os
 from pathlib import Path
 from typing import Dict
 
@@ -12,8 +13,10 @@ class ITradingLogger:
     """Enhanced logging for trading operations"""
 
     def __init__(self, name: str = 'ITrading'):
-        self.log_file = config.LOG_FILE
-        self.trade_log_file = config.TRADE_LOG_FILE
+        log_file_env = os.getenv('ITRADING_LOG_FILE', '').strip()
+        trade_log_file_env = os.getenv('ITRADING_TRADE_LOG_FILE', '').strip()
+        self.log_file = Path(log_file_env) if log_file_env else config.LOG_FILE
+        self.trade_log_file = Path(trade_log_file_env) if trade_log_file_env else config.TRADE_LOG_FILE
         self.log_level = config.LOG_LEVEL
         self.name = name
         self.setup_logging()

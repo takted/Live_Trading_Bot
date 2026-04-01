@@ -35,11 +35,33 @@ echo.
 echo ========================================================================
 echo.
 
+set INSTRUMENT=%~1
+if "%INSTRUMENT%"=="" set INSTRUMENT=AUDUSD
+set INSTRUMENT=%INSTRUMENT:"=%
+
+if /I "%INSTRUMENT%"=="AUDUSD" (
+    set ITRADING_PARAMS_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\config\parameters_live_audusd.json
+) else if /I "%INSTRUMENT%"=="EURUSD" (
+    set ITRADING_PARAMS_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\config\parameters_live_eurusd.json
+) else (
+    echo [ERROR] Unsupported instrument: %INSTRUMENT%
+    echo Supported instruments: AUDUSD, EURUSD
+    pause
+    exit /b 1
+)
+
+set ITRADING_LOG_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\logs\itrading_%INSTRUMENT%.log
+set ITRADING_TRADE_LOG_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\logs\itrading_%INSTRUMENT%_trades.log
+
+echo Instrument: %INSTRUMENT%
+echo Params: %ITRADING_PARAMS_FILE%
+echo Log: %ITRADING_LOG_FILE%
+echo.
+
 REM Run the bot and log output
 :RESTART
 echo [%date% %time%] Starting bot...
 cd C:\PyCharmProjects\Live_Trading_Bot
-set ITRADING_PARAMS_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\config\parameters_live.json
 C:\PyCharmProjects\Live_Trading_Bot\.venv\Scripts\python.exe C:\PyCharmProjects\Live_Trading_Bot\itrading\scripts\run_forex_live.py
 
 

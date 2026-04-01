@@ -2480,6 +2480,22 @@ class SLTPObserver(bt.Observer):
             self.lines.tp[0] = float('nan')
 
 
+# Preserve legacy implementation for reference/backward compatibility.
+LegacyITradingStrategyEURUSD = ITradingStrategyEURUSD
+
+# Live-parity EURUSD strategy: inherits the same live mode + lifecycle logging behavior
+# used by the main production ITradingStrategy.
+from itrading.src.strategy import ITradingStrategy as _BaseITradingStrategy
+
+
+class ITradingStrategyEURUSD(_BaseITradingStrategy):
+    params = (
+        ('instrument_name', 'EURUSD'),
+        ('enable_long_trades', True),
+        ('enable_short_trades', True),
+    )
+
+
 if __name__ == '__main__':
     from datetime import datetime, timedelta
 
