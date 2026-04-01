@@ -288,6 +288,8 @@ class ITradingStrategyAUDUSD(bt.Strategy):
         instrument_name='AUDUSD',
         use_forex_position_calc=True,
         contract_size=100000,
+        forex_base_currency='AUD',       # Base currency (updated by _apply_forex_config)
+        forex_quote_currency='USD',      # Quote currency (updated by _apply_forex_config)
         forex_pip_value=0.0001,
         forex_pip_decimal_places=5,
         forex_spread_pips=2.2,
@@ -686,82 +688,94 @@ class ITradingStrategyAUDUSD(bt.Strategy):
             profit_pips = 0
             risk_reward = 0
 
-        # Calculate monetary values for XAUUSD
-        # AUDUSD: $10 per pip for standard lot (100,000 AUD)
-        pip_value_per_lot = 1.0
+        # Pip value per lot: for USD-quoted pairs (AUDUSD, EURUSD etc.), each pip = pip_value * lot_size USD
+        pip_value_per_lot = self.p.forex_pip_value * self.p.contract_size
 
         risk_amount = pip_risk * lot_size * pip_value_per_lot
         profit_potential = profit_pips * lot_size * pip_value_per_lot
         spread_cost = self.p.forex_spread_pips * lot_size * pip_value_per_lot
 
-        # Format units for XAUUSD
-        units_desc = f"{lot_size * self.p.contract_size:,.0f} oz {self.p.forex_base_currency}"
+        instrument = self.p.instrument_name or 'UNKNOWN'
+        base_currency = getattr(self.p, 'forex_base_currency', instrument[:3])
+        units_desc = f"{lot_size * self.p.contract_size:,.0f} {base_currency}"
 
         # Format prices based on decimal places
         price_format = f"{{:.{self.p.forex_pip_decimal_places}f}}"
 
-        return (f"\n--- AUDUSD TRADE DETAILS ({self.p.instrument_name}) ---\n"
+        return (f"\n--- FOREX TRADE DETAILS ({instrument}) ---\n"
                 f"Position Size: {lot_size:.2f} lots ({units_desc})\n"
                 f"Position Value: ${position_value:,.2f}\n"
                 f"Margin Required: ${margin_required:,.2f} ({self.p.forex_margin_required}%)\n"
                 f"Entry: {price_format.format(entry_price)} | SL: {price_format.format(stop_loss)} | TP: {price_format.format(take_profit)}\n"
-                f"Risk: {pip_risk:.1f} ticks (${risk_amount:.2f}) | Profit: {profit_pips:.1f} ticks (${profit_potential:.2f})\n"
+                f"Risk: {pip_risk:.1f} pips (${risk_amount:.2f}) | Profit: {profit_pips:.1f} pips (${profit_potential:.2f})\n"
                 f"Risk/Reward: 1:{risk_reward:.2f} | Spread Cost: ${spread_cost:.2f}\n"
                 f"Account Leverage: {self.p.account_leverage:.0f}:1 | Account: {self.p.account_currency}")
 
     def _validate_forex_setup(self):
-        """Validate forex configuration for USDCHF.
+        """Validate forex configuration for the configured instrument.
 
         Returns:
-            bool: True if configuration is valid for XAUUSD data
+            bool: True if configuration appears consistent.
         """
         if not self.p.use_forex_position_calc:
             return True
 
-        # Check if data filename matches XAUUSD
-        data_filename = getattr(self, '_data_filename', '')
-        if isinstance(data_filename, str) and 'AUDUSD' not in data_filename.upper():
-            print(f"WARNING: Data file is {data_filename} but strategy is configured for AUDUSD")
+        instrument = (self.p.instrument_name or 'AUDUSD').upper()
+        cfg = self._get_forex_instrument_config(instrument)
+        price_range = cfg.get('price_range', (0.50, 1.50))
 
-        # Validate price ranges for AUDUSD (Australian Dollar)
+        # Warn if data filename does not match the configured instrument
+        data_filename = getattr(self, '_data_filename', '')
+        if isinstance(data_filename, str) and data_filename and instrument not in data_filename.upper():
+            print(f"WARNING: Data file '{data_filename}' may not match configured instrument {instrument}")
+
+        # Warn if current price is outside the expected range for this instrument
         if hasattr(self.data, 'close') and len(self.data.close) > 0:
             current_price = float(self.data.close[0])
-            if current_price < 0.50 or current_price > 1.50:
-                print(f"WARNING: Price {current_price} seems unusual for AUDUSD (expected range: 0.50-1.50)")
-
-        # Check tick value consistency for AUDUSD
-        if self.p.forex_pip_value != 0.0001:
-            print(f"INFO: AUDUSD typically uses pip value of 0.0001, current setting: {self.p.forex_pip_value}")
+            if not (price_range[0] <= current_price <= price_range[1]):
+                print(
+                    f"WARNING: Price {current_price:.5f} seems unusual for {instrument} "
+                    f"(expected range: {price_range[0]}-{price_range[1]})"
+                )
 
         return True
 
     def _get_forex_instrument_config(self, instrument_name=None):
-        """Get configuration for AUDUSD instrument.
+        """Return instrument-specific forex configuration.
 
         Args:
-            instrument_name: Override instrument name (defaults to XAUUSD)
+            instrument_name: Instrument symbol (e.g. 'AUDUSD', 'EURUSD').
+                             Defaults to self.p.instrument_name or 'AUDUSD'.
 
         Returns:
-            dict: Configuration dictionary for XAUUSD
+            dict: Configuration dictionary for the given instrument.
         """
-        # Auto-detect instrument from data filename if not specified
         if instrument_name is None or instrument_name == 'AUTO':
             instrument_name = self.p.instrument_name or 'AUDUSD'
 
-        # XAUUSD configuration only
-        config = {
-            'AUDUSD': {  # Australian Dollar vs US Dollar
+        configs = {
+            'AUDUSD': {
                 'base_currency': 'AUD',
                 'quote_currency': 'USD',
                 'pip_value': 0.0001,
                 'pip_decimal_places': 5,
-                'lot_size': 100000,  # Standard Forex lot size
+                'lot_size': 100000,
                 'margin_required': 3.33,
-                'typical_spread': 2.2
-            }
+                'typical_spread': 2.2,
+                'price_range': (0.50, 1.50),
+            },
+            'EURUSD': {
+                'base_currency': 'EUR',
+                'quote_currency': 'USD',
+                'pip_value': 0.0001,
+                'pip_decimal_places': 4,
+                'lot_size': 100000,
+                'margin_required': 3.33,
+                'typical_spread': 2.2,
+                'price_range': (0.80, 1.60),
+            },
         }
-
-        return config.get(instrument_name, config['AUDUSD'])
+        return configs.get(instrument_name, configs['AUDUSD'])
 
     def _apply_forex_config(self):
         """Apply forex configuration for USDCHF."""
@@ -3086,8 +3100,88 @@ class ITradingStrategyAUDUSD(bt.Strategy):
 # Any code that imports it by the old name will still work.
 ITradingStrategy = ITradingStrategyAUDUSD
 
-# EURUSD alias – strategy class referenced by parameters_live_eurusd.json.
-# Currently shares the same implementation; replace with a dedicated subclass
-# (see strategies/itrading_strategy_eurusd.py) when EURUSD-specific tuning
-# is required.
-ITradingStrategyEURUSD = ITradingStrategyAUDUSD
+
+class ITradingStrategyEURUSD(ITradingStrategyAUDUSD):
+    """EUR/USD trading strategy.
+
+    Inherits the full ITradingStrategyAUDUSD infrastructure and overrides
+    parameters with values optimized for the EUR/USD forex pair.
+
+    Key EURUSD-specific characteristics:
+    - LONG-only by default (optimized for uptrend bias on EURUSD)
+    - Tighter ATR thresholds tuned to EURUSD typical 5-minute volatility
+    - Faster EMA confirmation period (period=1) for immediate price response
+    - Wider price-filter EMA (period=70) for stronger trend alignment
+    - Narrower trading window (03:00-21:00 UTC) matching EURUSD peak liquidity
+    - Smaller SL multiplier (1.5x ATR) with larger TP multiplier (10x ATR)
+      for asymmetric risk/reward targeting
+
+    Instrument settings:
+    - Base: EUR / Quote: USD
+    - Standard 100,000-unit forex lot size
+    - 4-decimal-place pip values (0.0001)
+    - 30:1 leverage / 3.33% margin requirement
+    """
+
+    params = (
+        # === INSTRUMENT ===
+        ('instrument_name', 'EURUSD'),
+        ('forex_base_currency', 'EUR'),
+        ('forex_quote_currency', 'USD'),
+        ('forex_pip_decimal_places', 4),
+
+        # === TRADING DIRECTION (LONG-only optimized for EURUSD) ===
+        ('enable_long_trades', True),
+        ('enable_short_trades', False),
+
+        # === TECHNICAL INDICATORS (EURUSD-optimized) ===
+        ('ema_fast_length', 18),
+        ('ema_medium_length', 18),
+        ('ema_slow_length', 24),
+        ('ema_confirm_length', 1),           # Immediate-response confirmation EMA
+        ('ema_filter_price_length', 70),     # Strong trend-alignment filter
+
+        # === ATR PERIOD ===
+        ('atr_length', 10),
+
+        # === LONG ATR VOLATILITY FILTER (EURUSD 5-min typical range) ===
+        ('long_use_atr_filter', True),
+        ('long_atr_min_threshold', 0.000150),
+        ('long_atr_max_threshold', 0.000499),
+        # ATR increment filter: only accept entries where volatility is expanding
+        ('long_use_atr_increment_filter', True),
+        ('long_atr_increment_min_threshold', 0.000050),
+        ('long_atr_increment_max_threshold', 0.000080),
+        # ATR decrement filter: disabled – allow trades during stable volatility
+        ('long_use_atr_decrement_filter', False),
+        ('long_atr_decrement_min_threshold', -0.000025),
+        ('long_atr_decrement_max_threshold', -0.000001),
+
+        # === LONG ENTRY FILTERS ===
+        ('long_use_ema_order_condition', False),   # No strict EMA ordering required
+        ('long_use_price_filter_ema', True),       # Price must be above 70-period EMA
+        ('long_use_candle_direction_filter', False), # No prior-candle direction check
+        ('long_use_angle_filter', False),           # No slope-angle filter
+        ('long_min_angle', 35.0),
+        ('long_max_angle', 85.0),
+        ('long_angle_scale_factor', 10000.0),
+
+        # === RISK MANAGEMENT (EURUSD asymmetric R:R) ===
+        ('long_atr_sl_multiplier', 1.5),   # Tight stop: entry_low - 1.5 × ATR
+        ('long_atr_tp_multiplier', 10.0),  # Wide target: entry_high + 10 × ATR
+
+        # === VOLATILITY EXPANSION CHANNEL / PULLBACK ENTRY ===
+        ('long_use_pullback_entry', True),
+        ('long_pullback_max_candles', 2),   # Require 2 bearish pullback candles
+        ('long_entry_window_periods', 1),   # 1-bar breakout confirmation window
+        ('use_window_time_offset', False),  # Open window immediately after pullback
+        ('window_offset_multiplier', 1.0),
+        ('window_price_offset_multiplier', 0.01),  # 1% of candle range as channel expansion
+
+        # === TIME RANGE FILTER (EURUSD peak liquidity: London + NY sessions) ===
+        ('use_time_range_filter', True),
+        ('entry_start_hour', 3),    # 03:00 UTC – London pre-market
+        ('entry_start_minute', 0),
+        ('entry_end_hour', 21),     # 21:00 UTC – NY session close
+        ('entry_end_minute', 0),
+    )
