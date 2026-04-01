@@ -27,6 +27,52 @@ STRATEGY_CLASS_BY_INSTRUMENT = {
     'AUDUSD': 'ITradingStrategyAUDUSD',
     'EURUSD': 'ITradingStrategyEURUSD',
     'GBPUSD': 'ITradingStrategyGBPUSD',
+    'EURJPY': 'ITradingStrategyEURJPY',
+}
+PRICE_PRECISION_BY_INSTRUMENT = {
+    'AUDUSD': 5,
+    'EURUSD': 5,
+    'GBPUSD': 5,
+    'EURJPY': 3,
+}
+STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT = {
+    'AUDUSD': {
+        'forex_base_currency': 'AUD',
+        'forex_quote_currency': 'USD',
+        'forex_pip_value': 0.0001,
+        'forex_pip_decimal_places': 5,
+        'contract_size': 100000,
+        'forex_spread_pips': 2.2,
+        'forex_margin_required': 3.33,
+    },
+    'EURUSD': {
+        'forex_base_currency': 'EUR',
+        'forex_quote_currency': 'USD',
+        'forex_pip_value': 0.0001,
+        'forex_pip_decimal_places': 4,
+        'contract_size': 100000,
+        'forex_spread_pips': 2.2,
+        'forex_margin_required': 3.33,
+    },
+    'GBPUSD': {
+        'forex_base_currency': 'GBP',
+        'forex_quote_currency': 'USD',
+        'forex_pip_value': 0.0001,
+        'forex_pip_decimal_places': 4,
+        'contract_size': 100000,
+        'forex_spread_pips': 2.2,
+        'forex_margin_required': 3.33,
+    },
+    'EURJPY': {
+        'forex_base_currency': 'EUR',
+        'forex_quote_currency': 'JPY',
+        'forex_pip_value': 0.01,
+        'forex_pip_decimal_places': 3,
+        'contract_size': 100000,
+        'forex_spread_pips': 2.0,
+        'forex_margin_required': 3.33,
+        'forex_jpy_rate': 152.0,
+    },
 }
 
 # --- Global Configuration ---
@@ -42,11 +88,37 @@ live_lifecycle_bridge: Optional[LiveLifecycleBridge] = None
 last_bt_cycle_summary: Optional[dict] = None
 active_strategy_class = DefaultITradingStrategy
 active_strategy_label = f"{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME}"
+active_forex_instrument = os.getenv('ITRADING_FOREX_INSTRUMENT', '').strip().upper() or None
+
+
+def _set_logging_instrument(instrument: str | None):
+    global active_forex_instrument
+    normalized = str(instrument or '').strip().upper() or None
+    active_forex_instrument = normalized
+    logger.set_instrument(normalized)
+
+
+def _console_print_with_instrument(tag: str, message: str, instrument: str | None = None):
+    prefix_instrument = str(instrument or active_forex_instrument or '').strip().upper()
+    if prefix_instrument:
+        print(f"[{prefix_instrument}][{tag}] {message}")
+    else:
+        print(f"[{tag}] {message}")
 
 
 def _default_strategy_class_name_for_instrument(instrument: str) -> str:
     instrument_key = str(instrument or DEFAULT_FOREX_INSTRUMENT).strip().upper() or DEFAULT_FOREX_INSTRUMENT
     return STRATEGY_CLASS_BY_INSTRUMENT.get(instrument_key, DEFAULT_STRATEGY_CLASS_NAME)
+
+
+def _default_price_precision_for_instrument(instrument: str) -> int:
+    instrument_key = str(instrument or DEFAULT_FOREX_INSTRUMENT).strip().upper() or DEFAULT_FOREX_INSTRUMENT
+    return PRICE_PRECISION_BY_INSTRUMENT.get(instrument_key, PRICE_PRECISION_BY_INSTRUMENT[DEFAULT_FOREX_INSTRUMENT])
+
+
+def _default_forex_strategy_params_for_instrument(instrument: str) -> dict:
+    instrument_key = str(instrument or DEFAULT_FOREX_INSTRUMENT).strip().upper() or DEFAULT_FOREX_INSTRUMENT
+    return dict(STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT.get(instrument_key, STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT[DEFAULT_FOREX_INSTRUMENT]))
 
 
 def _normalize_live_params(params: dict) -> dict:
@@ -57,9 +129,18 @@ def _normalize_live_params(params: dict) -> dict:
     configured_instrument = str(normalized.get('FOREX_INSTRUMENT', DEFAULT_FOREX_INSTRUMENT)).strip().upper()
     instrument = instrument_override or configured_instrument or DEFAULT_FOREX_INSTRUMENT
     normalized['FOREX_INSTRUMENT'] = instrument
+    _set_logging_instrument(instrument)
 
     strategy_params = dict(normalized.get('STRATEGY_PARAMS') or {})
     strategy_params['instrument_name'] = instrument
+
+    configured_default_forex = _default_forex_strategy_params_for_instrument(configured_instrument or instrument)
+    target_default_forex = _default_forex_strategy_params_for_instrument(instrument)
+    for key, target_value in target_default_forex.items():
+        current_value = strategy_params.get(key)
+        if key not in strategy_params or (instrument_override and current_value == configured_default_forex.get(key)):
+            strategy_params[key] = target_value
+
     normalized['STRATEGY_PARAMS'] = strategy_params
 
     module_name = str(normalized.get('STRATEGY_MODULE', DEFAULT_STRATEGY_MODULE)).strip()
@@ -76,8 +157,10 @@ def _normalize_live_params(params: dict) -> dict:
             f"Overriding FOREX_INSTRUMENT from {configured_instrument or DEFAULT_FOREX_INSTRUMENT} "
             f"to {instrument_override} via ITRADING_FOREX_INSTRUMENT")
 
-    if not normalized.get('PRICE_PRECISION'):
-        normalized['PRICE_PRECISION'] = 5
+    configured_default_precision = _default_price_precision_for_instrument(configured_instrument or instrument)
+    target_default_precision = _default_price_precision_for_instrument(instrument)
+    if not normalized.get('PRICE_PRECISION') or (instrument_override and normalized.get('PRICE_PRECISION') == configured_default_precision):
+        normalized['PRICE_PRECISION'] = target_default_precision
 
     return normalized
 
@@ -334,9 +417,10 @@ def load_params():
     if not params_path.exists():
         params_path = config_dir / 'parameters.json'
 
-    logger.info(f"Loading parameters from: {params_path}")
     with open(params_path, 'r', encoding='utf-8') as f:
-        return _normalize_live_params(json.load(f))
+        normalized = _normalize_live_params(json.load(f))
+    logger.info(f"Loading parameters from: {params_path}")
+    return normalized
 
 async def execute_live_trade(contract, signal, params):
     """Translates a strategy signal into a live bracket order."""
@@ -407,7 +491,9 @@ def on_bar_update(bars, has_new_bar):
     # Print live ticks as they come in
     current_tick_info = (current_time, latest_bar.close, latest_bar.open_, latest_bar.high, latest_bar.low)
     if current_tick_info != g_last_tick_info:
-        print(f"[Live Tick] {current_time.strftime('%Y-%m-%d %H:%M:%S')} | Open Price: {latest_bar.open_} | High: {latest_bar.high} | Low: {latest_bar.low} | Closing Price: {latest_bar.close}")
+        _console_print_with_instrument(
+            'Live Tick',
+            f"{current_time.strftime('%Y-%m-%d %H:%M:%S')} | Open Price: {latest_bar.open_} | High: {latest_bar.high} | Low: {latest_bar.low} | Closing Price: {latest_bar.close}")
         g_last_tick_info = current_tick_info
 
     # More robust boundary check

@@ -292,10 +292,12 @@ class ITradingStrategy(bt.Strategy):
         forex_quote_currency='USD',      # Quote currency (updated by _apply_forex_config)
         forex_pip_value=0.0001,
         forex_pip_decimal_places=5,
+        forex_jpy_rate=152.0,
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
         account_currency='USD',
         account_leverage=30.0,
+        min_exchange_units=2500,
 
         # === REPORTING & DEBUGGING ===
         verbose_debug=True,
@@ -606,13 +608,14 @@ class ITradingStrategy(bt.Strategy):
 
         account_equity = self.broker.get_value()
 
-        # 1. Define minimum exchange units for AUD.USD on IdealPro
-        min_exchange_units = 2500
+        # 1. Define minimum exchange units for the configured forex instrument.
+        min_exchange_units = max(int(getattr(self.p, 'min_exchange_units', 2500) or 0), 1)
 
         # 2. Calculate maximum units allowed by the total cash limit (MAX_POSITION_SIZE)
-        max_position_value_usd = config.MAX_POSITION_SIZE * account_equity
-        if entry_price > 0:
-            max_units_by_value = int(max_position_value_usd / entry_price)
+        max_position_value_account = config.MAX_POSITION_SIZE * account_equity
+        unit_value_in_account = self._get_base_unit_value_in_account_currency(entry_price)
+        if unit_value_in_account > 0:
+            max_units_by_value = int(max_position_value_account / unit_value_in_account)
         else:
             max_units_by_value = 0
 
@@ -625,7 +628,7 @@ class ITradingStrategy(bt.Strategy):
             risk_amount = account_equity * self.p.risk_percent
             
             if pip_risk > 0:
-                value_per_pip_per_unit = self.p.forex_pip_value
+                value_per_pip_per_unit = self._get_pip_value_per_unit_in_account_currency(entry_price)
                 risk_per_unit = pip_risk * value_per_pip_per_unit
                 units_by_risk = int(risk_amount / risk_per_unit) if risk_per_unit > 0 else 0
             else:
@@ -652,7 +655,7 @@ class ITradingStrategy(bt.Strategy):
             return 0.0, 0, 0.0, 0.0, 0.0
 
         optimal_lots = units / self.p.contract_size
-        position_value = units * entry_price
+        position_value = units * unit_value_in_account
         margin_required = position_value * (self.p.forex_margin_required / 100.0)
         
         # Recalculate pip_risk for the final size for logging/info purposes
@@ -660,6 +663,56 @@ class ITradingStrategy(bt.Strategy):
         pip_risk = price_difference / self.p.forex_pip_value
 
         return optimal_lots, units, margin_required, pip_risk, position_value
+
+    def _get_quote_to_account_rate(self):
+        """Return quote-currency to account-currency conversion rate."""
+        quote_currency = str(getattr(self.p, 'forex_quote_currency', '') or '').upper()
+        account_currency = str(getattr(self.p, 'account_currency', '') or '').upper()
+
+        if not quote_currency or quote_currency == account_currency:
+            return 1.0
+
+        if quote_currency == 'JPY' and account_currency == 'USD':
+            jpy_rate = float(getattr(self.p, 'forex_jpy_rate', 0.0) or 0.0)
+            if jpy_rate > 0:
+                return 1.0 / jpy_rate
+
+        explicit_rate = getattr(self.p, 'forex_quote_to_account_rate', None)
+        if explicit_rate is None:
+            explicit_rate = 0.0
+        else:
+            try:
+                explicit_rate = float(explicit_rate)
+            except (TypeError, ValueError):
+                explicit_rate = 0.0
+
+        return explicit_rate if explicit_rate > 0 else 1.0
+
+    def _get_base_unit_value_in_account_currency(self, entry_price):
+        """Estimate the account-currency value of one base unit for sizing and reporting."""
+        base_currency = str(getattr(self.p, 'forex_base_currency', '') or '').upper()
+        account_currency = str(getattr(self.p, 'account_currency', '') or '').upper()
+
+        if not base_currency or base_currency == account_currency:
+            return 1.0
+
+        if entry_price and entry_price > 0:
+            return float(entry_price) * self._get_quote_to_account_rate()
+
+        explicit_rate = getattr(self.p, 'forex_base_to_account_rate', None)
+        if explicit_rate is None:
+            explicit_rate = 0.0
+        else:
+            try:
+                explicit_rate = float(explicit_rate)
+            except (TypeError, ValueError):
+                explicit_rate = 0.0
+
+        return explicit_rate if explicit_rate > 0 else 1.0
+
+    def _get_pip_value_per_unit_in_account_currency(self, entry_price=None):
+        """Return the per-unit pip value in account currency."""
+        return float(self.p.forex_pip_value) * self._get_quote_to_account_rate()
 
     def _format_forex_trade_info(self, entry_price, stop_loss, take_profit, lot_size, pip_risk, position_value,
                                  margin_required):
@@ -688,8 +741,7 @@ class ITradingStrategy(bt.Strategy):
             profit_pips = 0
             risk_reward = 0
 
-        # Pip value per lot: for USD-quoted pairs (AUDUSD, EURUSD etc.), each pip = pip_value * lot_size USD
-        pip_value_per_lot = self.p.forex_pip_value * self.p.contract_size
+        pip_value_per_lot = self._get_pip_value_per_unit_in_account_currency(entry_price) * self.p.contract_size
 
         risk_amount = pip_risk * lot_size * pip_value_per_lot
         profit_potential = profit_pips * lot_size * pip_value_per_lot
@@ -698,17 +750,18 @@ class ITradingStrategy(bt.Strategy):
         instrument = self.p.instrument_name or 'UNKNOWN'
         base_currency = getattr(self.p, 'forex_base_currency', instrument[:3])
         units_desc = f"{lot_size * self.p.contract_size:,.0f} {base_currency}"
+        account_currency = getattr(self.p, 'account_currency', 'USD')
 
         # Format prices based on decimal places
         price_format = f"{{:.{self.p.forex_pip_decimal_places}f}}"
 
         return (f"\n--- FOREX TRADE DETAILS ({instrument}) ---\n"
                 f"Position Size: {lot_size:.2f} lots ({units_desc})\n"
-                f"Position Value: ${position_value:,.2f}\n"
-                f"Margin Required: ${margin_required:,.2f} ({self.p.forex_margin_required}%)\n"
+                f"Position Value: {account_currency} {position_value:,.2f}\n"
+                f"Margin Required: {account_currency} {margin_required:,.2f} ({self.p.forex_margin_required}%)\n"
                 f"Entry: {price_format.format(entry_price)} | SL: {price_format.format(stop_loss)} | TP: {price_format.format(take_profit)}\n"
-                f"Risk: {pip_risk:.1f} pips (${risk_amount:.2f}) | Profit: {profit_pips:.1f} pips (${profit_potential:.2f})\n"
-                f"Risk/Reward: 1:{risk_reward:.2f} | Spread Cost: ${spread_cost:.2f}\n"
+                f"Risk: {pip_risk:.1f} pips ({account_currency} {risk_amount:.2f}) | Profit: {profit_pips:.1f} pips ({account_currency} {profit_potential:.2f})\n"
+                f"Risk/Reward: 1:{risk_reward:.2f} | Spread Cost: {account_currency} {spread_cost:.2f}\n"
                 f"Account Leverage: {self.p.account_leverage:.0f}:1 | Account: {self.p.account_currency}")
 
     def _validate_forex_setup(self):
@@ -733,8 +786,9 @@ class ITradingStrategy(bt.Strategy):
         if hasattr(self.data, 'close') and len(self.data.close) > 0:
             current_price = float(self.data.close[0])
             if not (price_range[0] <= current_price <= price_range[1]):
+                price_format = f"{{:.{self.p.forex_pip_decimal_places}f}}"
                 print(
-                    f"WARNING: Price {current_price:.5f} seems unusual for {instrument} "
+                    f"WARNING: Price {price_format.format(current_price)} seems unusual for {instrument} "
                     f"(expected range: {price_range[0]}-{price_range[1]})"
                 )
 
@@ -783,6 +837,16 @@ class ITradingStrategy(bt.Strategy):
                 'margin_required': 3.33,
                 'typical_spread': 2.2,
                 'price_range': (1.00, 1.50),
+            },
+            'EURJPY': {
+                'base_currency': 'EUR',
+                'quote_currency': 'JPY',
+                'pip_value': 0.01,
+                'pip_decimal_places': 3,
+                'lot_size': 100000,
+                'margin_required': 3.33,
+                'typical_spread': 2.0,
+                'price_range': (100.0, 200.0),
             },
         }
         return configs.get(instrument_name, configs['AUDUSD'])
@@ -916,12 +980,21 @@ class ITradingStrategy(bt.Strategy):
         # --- Lifecycle Logger ---
         self._first_next_logged = False
         if self.p.lifecycle_logging:
-            print(f"[LIFECYCLE] __init__ | instrument={self.p.instrument_name} | live={self.p.live_trading} | long={self.p.enable_long_trades} short={self.p.enable_short_trades} | pullback_L={self.p.long_use_pullback_entry} pullback_S={self.p.short_use_pullback_entry} | ATR={self.p.atr_length} EMA_confirm={self.p.ema_confirm_length}")
+            self._tagged_print(
+                'LIFECYCLE',
+                f"__init__ | instrument={self.p.instrument_name} | live={self.p.live_trading} | long={self.p.enable_long_trades} short={self.p.enable_short_trades} | pullback_L={self.p.long_use_pullback_entry} pullback_S={self.p.short_use_pullback_entry} | ATR={self.p.atr_length} EMA_confirm={self.p.ema_confirm_length}")
+
+    def _instrument_log_prefix(self):
+        instrument = str(getattr(self.p, 'instrument_name', '') or 'UNKNOWN').strip().upper() or 'UNKNOWN'
+        return f"[{instrument}]"
+
+    def _tagged_print(self, tag, message):
+        print(f"{self._instrument_log_prefix()}[{tag}] {message}")
 
     def _lifecycle_debug(self, message):
         """Emit compact diagnostic logs when lifecycle logging is enabled."""
         if self.p.lifecycle_logging:
-            print(f"[LIFECYCLE] {message}")
+            self._tagged_print('LIFECYCLE', message)
 
     def _load_live_state(self, state):
         """Restore minimal live state so each 5-minute run continues from prior run."""
@@ -969,7 +1042,7 @@ class ITradingStrategy(bt.Strategy):
         if self.p.live_trading and self.data_len == 0:
             self.data_len = self.data.buflen()
         if self.p.lifecycle_logging:
-            print(f"[LIFECYCLE] prenext | bar={len(self)} | total_bars={self.data.buflen()} | close={float(self.data.close[0]):.5f}")
+            self._tagged_print('LIFECYCLE', f"prenext | bar={len(self)} | total_bars={self.data.buflen()} | close={float(self.data.close[0]):.5f}")
 
     def _init_trade_reporting(self):
         """Initialize trade reporting functionality"""
@@ -1487,7 +1560,7 @@ class ITradingStrategy(bt.Strategy):
         # --- Lifecycle Logger: fires only on the very first next() call ---
         if self.p.lifecycle_logging and not self._first_next_logged:
             _dt0 = bt.num2date(self.data.datetime[0])
-            print(f"[LIFECYCLE] next#1 (first call) | bar={len(self)} | dt={_dt0:%Y-%m-%d %H:%M} | close={float(self.data.close[0]):.5f} | entry_state={self.entry_state} | live={self.p.live_trading}")
+            self._tagged_print('LIFECYCLE', f"next#1 (first call) | bar={len(self)} | dt={_dt0:%Y-%m-%d %H:%M} | close={float(self.data.close[0]):.5f} | entry_state={self.entry_state} | live={self.p.live_trading}")
             self._first_next_logged = True
 
         # CRITICAL: In live mode, we need to process ALL bars to warm up indicators,
@@ -1515,7 +1588,7 @@ class ITradingStrategy(bt.Strategy):
             if not self.position:
                 # Position closed successfully, clear flag
                 self.pending_close = False
-                print("DEBUG: Close operation completed, clearing pending_close flag")
+                self._tagged_print('DEBUG', 'Close operation completed, clearing pending_close flag')
             else:
                 # Still waiting for close to complete
                 self._lifecycle_debug("next skip pending-close | waiting for position to close")
@@ -1532,7 +1605,7 @@ class ITradingStrategy(bt.Strategy):
             return
 
         current_close = float(self.data.close[0])
-        print(f"[Current Bar] Datetime: {dt.strftime('%Y-%m-%d %H:%M:%S')} | Closing Price: {current_close}")
+        self._tagged_print('Current Bar', f"Datetime: {dt.strftime('%Y-%m-%d %H:%M:%S')} | Closing Price: {current_close}")
 
         # Track position state changes
         if self.position:
@@ -2241,14 +2314,6 @@ class ITradingStrategy(bt.Strategy):
                                             f"ATR INCREMENT Filter: LONG pullback rejected - ATR increment {atr_change:+.6f} outside range [{self.p.long_atr_increment_min_threshold:.6f}, {self.p.long_atr_increment_max_threshold:.6f}]")
                                     self._reset_pullback_state()
                                     return False
-                            else:
-                                # Increment filter is DISABLED - reject ALL increments (based on analysis)
-                                if self.p.verbose_debug:
-                                    print(
-                                        f"ATR INCREMENT Filter: LONG pullback rejected - ATR increment {atr_change:+.6f} (increment filter disabled, all increments rejected)")
-                                self._reset_pullback_state()
-                                return False
-
                         # Rule 2: If ATR is decrementing (negative change: high → low volatility)
                         elif atr_change < 0:
                             if self.p.long_use_atr_decrement_filter:
@@ -2260,8 +2325,6 @@ class ITradingStrategy(bt.Strategy):
                                             f"ATR DECREMENT Filter: LONG pullback rejected - ATR change {atr_change:+.6f} outside range [{self.p.long_atr_decrement_min_threshold:.6f}, {self.p.long_atr_decrement_max_threshold:.6f}]")
                                     self._reset_pullback_state()
                                     return False
-                            # If decrement filter is DISABLED, allow all decrements (pass through)
-
                         # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
 
                     # Transition to Phase 3: Start entry window countdown
@@ -2317,13 +2380,6 @@ class ITradingStrategy(bt.Strategy):
                                     print(
                                         f"ATR INCREMENT Filter: LONG entry rejected - ATR increment {atr_change:+.6f} outside range [{self.p.long_atr_increment_min_threshold:.6f}, {self.p.long_atr_increment_max_threshold:.6f}]")
                                 return False
-                        else:
-                            # Increment filter is DISABLED - reject ALL increments (based on analysis)
-                            if self.p.print_signals:
-                                print(
-                                    f"ATR INCREMENT Filter: LONG entry rejected - ATR increment {atr_change:+.6f} (increment filter disabled, all increments rejected)")
-                            return False
-
                     # Rule 2: If ATR is decrementing (negative change: high → low volatility)
                     elif atr_change < 0:
                         if self.p.long_use_atr_decrement_filter:
@@ -2334,8 +2390,6 @@ class ITradingStrategy(bt.Strategy):
                                     print(
                                         f"ATR DECREMENT Filter: LONG entry rejected - ATR change {atr_change:+.6f} outside range [{self.p.long_atr_decrement_min_threshold:.6f}, {self.p.long_atr_decrement_max_threshold:.6f}]")
                                 return False
-                        # If decrement filter is DISABLED, allow all decrements (pass through)
-
                     # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
 
                 if self.p.print_signals:
@@ -2452,8 +2506,6 @@ class ITradingStrategy(bt.Strategy):
                                             f"ATR INCREMENT Filter: SHORT pullback rejected - ATR increment {atr_change:+.6f} outside range [{self.p.short_atr_increment_min_threshold:.6f}, {self.p.short_atr_increment_max_threshold:.6f}]")
                                     self._reset_pullback_state()
                                     return False
-                            # If increment filter is DISABLED, allow all increments for SHORT (different strategy)
-
                         # Rule 2: If ATR is decrementing (negative change: high → low volatility)
                         elif atr_change < 0:
                             if self.p.short_use_atr_decrement_filter:
@@ -2526,8 +2578,6 @@ class ITradingStrategy(bt.Strategy):
                                     print(
                                         f"ATR INCREMENT Filter: SHORT entry rejected - ATR increment {atr_change:+.6f} outside range [{self.p.short_atr_increment_min_threshold:.6f}, {self.p.short_atr_increment_max_threshold:.6f}]")
                                 return False
-                        # If increment filter is DISABLED, allow all increments for SHORT (different strategy)
-
                     # Rule 2: If ATR is decrementing (negative change: high → low volatility)
                     elif atr_change < 0:
                         if self.p.short_use_atr_decrement_filter:
@@ -2538,8 +2588,6 @@ class ITradingStrategy(bt.Strategy):
                                     print(
                                         f"ATR DECREMENT Filter: SHORT entry rejected - ATR change {atr_change:+.6f} outside range [{self.p.short_atr_decrement_min_threshold:.6f}, {self.p.short_atr_decrement_max_threshold:.6f}]")
                                 return False
-                        # If decrement filter is DISABLED, allow all decrements (pass through)
-
                     # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
 
                 if self.p.print_signals:
@@ -2806,7 +2854,7 @@ class ITradingStrategy(bt.Strategy):
 
         if self.p.lifecycle_logging:
             _exec_price = order.executed.price if order.status == order.Completed else 0.0
-            print(f"[LIFECYCLE] notify_order | ref={order.ref} | status={order.getstatusname()} | action={'BUY' if order.isbuy() else 'SELL'} | exec_price={_exec_price:.5f} | dt={dt:%Y-%m-%d %H:%M}")
+            self._tagged_print('LIFECYCLE', f"notify_order | ref={order.ref} | status={order.getstatusname()} | action={'BUY' if order.isbuy() else 'SELL'} | exec_price={_exec_price:.5f} | dt={dt:%Y-%m-%d %H:%M}")
 
         if order.status in [order.Submitted, order.Accepted]:
             return
@@ -2913,7 +2961,7 @@ class ITradingStrategy(bt.Strategy):
         """Use Backtrader's proper trade notification for accurate PnL tracking"""
 
         if self.p.lifecycle_logging:
-            print(f"[LIFECYCLE] notify_trade | ref={trade.ref} | closed={trade.isclosed} | pnl={trade.pnlcomm:.2f} | size={trade.size} | price={trade.price:.5f}")
+            self._tagged_print('LIFECYCLE', f"notify_trade | ref={trade.ref} | closed={trade.isclosed} | pnl={trade.pnlcomm:.2f} | size={trade.size} | price={trade.price:.5f}")
 
         if not trade.isclosed:
             return
@@ -3024,11 +3072,11 @@ class ITradingStrategy(bt.Strategy):
             unrealized_pnl = position_size * price_diff
 
             if self.p.print_signals:
-                print(f"STRATEGY END: Closing open position.")
+                print("STRATEGY END: Closing open position.")
                 print(f"  Size: {position_size}, Entry: {entry_price:.5f}, Current: {current_price:.5f}")
                 print(f"  Unrealized PnL: {unrealized_pnl:+.2f}")
 
-            # Manually update statistics for the open trade before closing
+            # Manually update statistics for the open trade before closing.
             self.trades += 1
             if unrealized_pnl > 0:
                 self.wins += 1
@@ -3037,10 +3085,8 @@ class ITradingStrategy(bt.Strategy):
                 self.losses += 1
                 self.gross_loss += abs(unrealized_pnl)
 
-            # Close the position
+            # Close the position and cancel any remaining protective orders.
             self.order = self.close()
-
-            # Cancel any remaining protective orders
             if self.stop_order:
                 self.cancel(self.stop_order)
                 self.stop_order = None
@@ -3048,23 +3094,23 @@ class ITradingStrategy(bt.Strategy):
                 self.cancel(self.limit_order)
                 self.limit_order = None
 
-        # Enhanced summary calculation with debug stats
+        # Enhanced summary calculation with debug stats.
         print("=== ITRADING SUMMARY ===")
 
-        # Calculate metrics
         wr = (self.wins / self.trades * 100.0) if self.trades else 0.0
         pf = (self.gross_profit / self.gross_loss) if self.gross_loss > 0 else float('inf')
 
-        # Backtrader portfolio value
         final_value = self.broker.get_value()
-        # STARTING_CASH comes from parameters JSON in the runner via cerebro.broker.setcash(...)
-        starting_cash = float(getattr(self.broker, 'startingcash', final_value))
+        starting_cash_raw = getattr(self.broker, 'startingcash', final_value)
+        try:
+            starting_cash = float(starting_cash_raw)
+        except (TypeError, ValueError):
+            starting_cash = float(final_value)
         total_pnl = final_value - starting_cash
 
         print(f"Trades: {self.trades} Wins: {self.wins} Losses: {self.losses} WinRate: {wr:.2f}% PF: {pf:.2f}")
         print(f"Final Value: {final_value:,.2f} | Total PnL: {total_pnl:+,.2f}")
 
-        # DEBUG STATISTICS
         print(f"\n=== ENTRY SIGNAL DEBUG STATS ===")
         print(f"Total Entry Signals Evaluated: {self.entry_signal_count}")
         print(f"Blocked Entries: {self.blocked_entry_count}")
@@ -3074,16 +3120,14 @@ class ITradingStrategy(bt.Strategy):
             success_rate = (self.successful_entry_count / self.entry_signal_count) * 100
             print(f"Block Rate: {block_rate:.1f}% | Success Rate: {success_rate:.1f}%")
 
-        # Validation
         calculated_pnl = self.gross_profit - self.gross_loss
         pnl_diff = abs(calculated_pnl - total_pnl)
-        if pnl_diff > 10.0:  # Allow for small rounding/fee differences
+        if pnl_diff > 10.0:
             print(f"INFO: PnL difference: {pnl_diff:.2f} (calculated: {calculated_pnl:+.2f})")
 
         if self.p.long_use_pullback_entry or self.p.short_use_pullback_entry:
             self._reset_pullback_state()
 
-        # Close trade reporting
         self._close_trade_reporting()
 
     def _cancel_all_pending_orders(self):
@@ -3098,9 +3142,9 @@ class ITradingStrategy(bt.Strategy):
             if self.limit_order:
                 self.broker.cancel(self.limit_order)
                 self.limit_order = None
-            print("DEBUG: All pending orders cancelled")
+            self._tagged_print('DEBUG', 'All pending orders cancelled')
         except Exception as e:
-            print(f"Error cancelling orders: {e}")
+            self._tagged_print('DEBUG', f"Error cancelling orders: {e}")
 
 
 class ITradingStrategyAUDUSD(ITradingStrategy):
@@ -3131,7 +3175,6 @@ class ITradingStrategyAUDUSD(ITradingStrategy):
         ('short_atr_max_threshold', 0.000750),
         ('forex_base_currency', 'AUD'),
         ('forex_quote_currency', 'USD'),
-        ('forex_pip_value', 0.0001),
         ('forex_pip_decimal_places', 5),
     )
 
@@ -3290,6 +3333,84 @@ class ITradingStrategyGBPUSD(ITradingStrategy):
         ('entry_start_hour', 7),
         ('entry_start_minute', 0),
         ('entry_end_hour', 18),
+        ('entry_end_minute', 0),
+
+        # === REPORTING / DEBUG ===
+        ('verbose_debug', False),
+        ('export_trade_reports', True),
+    )
+
+
+class ITradingStrategyEURJPY(ITradingStrategy):
+    """EUR/JPY trading strategy profile derived from the standalone EURJPY system.
+
+    This profile keeps the shared strategy engine while applying the long-only,
+    JPY-pair volatility, pullback, and forex settings tuned in `eurjpy.py`.
+    """
+
+    params = (
+        # === INSTRUMENT ===
+        ('instrument_name', 'EURJPY'),
+        ('forex_base_currency', 'EUR'),
+        ('forex_quote_currency', 'JPY'),
+        ('forex_pip_value', 0.01),
+        ('forex_pip_decimal_places', 3),
+        ('contract_size', 100000),
+        ('forex_spread_pips', 2.0),
+        ('forex_margin_required', 3.33),
+        ('forex_jpy_rate', 152.0),
+
+        # === TRADING DIRECTION (EURJPY sample is LONG-only) ===
+        ('enable_long_trades', True),
+        ('enable_short_trades', False),
+
+        # === TECHNICAL INDICATORS ===
+        ('ema_fast_length', 18),
+        ('ema_medium_length', 18),
+        ('ema_slow_length', 24),
+        ('ema_confirm_length', 1),
+        ('ema_filter_price_length', 70),
+        ('ema_exit_length', 25),
+        ('atr_length', 10),
+
+        # === LONG ATR VOLATILITY FILTER (JPY-pair scale) ===
+        ('long_use_atr_filter', False),
+        ('long_atr_min_threshold', 0.0450),
+        ('long_atr_max_threshold', 0.1100),
+        ('long_use_atr_increment_filter', True),
+        ('long_atr_increment_min_threshold', 0.0005),
+        ('long_atr_increment_max_threshold', 0.0110),
+        ('long_use_atr_decrement_filter', True),
+        ('long_atr_decrement_min_threshold', -0.0020),
+        ('long_atr_decrement_max_threshold', 0.0),
+
+        # === LONG ENTRY FILTERS ===
+        ('long_use_ema_order_condition', False),
+        ('long_use_price_filter_ema', True),
+        ('long_use_candle_direction_filter', False),
+        ('long_use_angle_filter', True),
+        ('long_min_angle', 60.0),
+        ('long_max_angle', 88.0),
+        ('long_angle_scale_factor', 100.0),
+        ('long_use_ema_below_price_filter', False),
+
+        # === RISK MANAGEMENT ===
+        ('long_atr_sl_multiplier', 3.0),
+        ('long_atr_tp_multiplier', 6.5),
+
+        # === PULLBACK / VOLATILITY EXPANSION ENTRY ===
+        ('long_use_pullback_entry', True),
+        ('long_pullback_max_candles', 2),
+        ('long_entry_window_periods', 3),
+        ('use_window_time_offset', False),
+        ('window_offset_multiplier', 2.0),
+        ('window_price_offset_multiplier', 0.01),
+
+        # === TIME FILTER ===
+        ('use_time_range_filter', False),
+        ('entry_start_hour', 7),
+        ('entry_start_minute', 0),
+        ('entry_end_hour', 16),
         ('entry_end_minute', 0),
 
         # === REPORTING / DEBUG ===

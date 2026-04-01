@@ -18,5 +18,5 @@ from itrading.src.wrapper import ITradingWrapper
 from itrading.src.connection import ITradingConnection
 from .position import ITradingPositionManager
 from .constants import SecurityType
-from .strategy import ITradingStrategyAUDUSD, ITradingStrategyEURUSD
+from .strategy import ITradingStrategyAUDUSD, ITradingStrategyEURUSD, ITradingStrategyGBPUSD, ITradingStrategyEURJPY
 from .live_lifecycle_bridge import LiveLifecycleBridge

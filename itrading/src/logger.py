@@ -19,7 +19,18 @@ class ITradingLogger:
         self.trade_log_file = Path(trade_log_file_env) if trade_log_file_env else config.TRADE_LOG_FILE
         self.log_level = config.LOG_LEVEL
         self.name = name
+        self.instrument = os.getenv('ITRADING_FOREX_INSTRUMENT', '').strip().upper() or None
         self.setup_logging()
+
+    def set_instrument(self, instrument: str | None):
+        """Set the active instrument used as a prefix for subsequent log lines."""
+        normalized = str(instrument or '').strip().upper()
+        self.instrument = normalized or None
+
+    def _format_message(self, message: str) -> str:
+        if self.instrument:
+            return f"[{self.instrument}]{message}"
+        return message
 
     def setup_logging(self):
         """Setup logging configuration"""
@@ -51,14 +62,14 @@ class ITradingLogger:
             self.trade_logger.addHandler(trade_handler)
 
     def info(self, message: str):
-        self.logger.info(message)
+        self.logger.info(self._format_message(message))
 
     def warning(self, message: str):
-        self.logger.warning(message)
+        self.logger.warning(self._format_message(message))
 
     def error(self, message: str, exc_info=False):
-        self.logger.error(message, exc_info=exc_info)
+        self.logger.error(self._format_message(message), exc_info=exc_info)
 
     def log_trade(self, trade_data: Dict):
         """Log trade-specific information"""
-        self.trade_logger.info(f"TRADE: {json.dumps(trade_data, default=str)}")
+        self.trade_logger.info(self._format_message(f"TRADE: {json.dumps(trade_data, default=str)}"))
