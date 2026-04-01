@@ -194,7 +194,7 @@ guarantee future results. Validate all logic and data quality before
 using in any live or simulated trading environment.
 """
 
-class ITradingStrategyAUDUSD(bt.Strategy):
+class ITradingStrategy(bt.Strategy):
     params = dict(
         # === LIVE TRADING / SIGNALING ===
         live_trading=False,
@@ -773,6 +773,16 @@ class ITradingStrategyAUDUSD(bt.Strategy):
                 'margin_required': 3.33,
                 'typical_spread': 2.2,
                 'price_range': (0.80, 1.60),
+            },
+            'GBPUSD': {
+                'base_currency': 'GBP',
+                'quote_currency': 'USD',
+                'pip_value': 0.0001,
+                'pip_decimal_places': 4,
+                'lot_size': 100000,
+                'margin_required': 3.33,
+                'typical_spread': 2.2,
+                'price_range': (1.00, 1.50),
             },
         }
         return configs.get(instrument_name, configs['AUDUSD'])
@@ -2328,30 +2338,30 @@ class ITradingStrategyAUDUSD(bt.Strategy):
 
                     # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
 
-                    if self.p.print_signals:
-                        atr_info = ""
-                        if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
-                            atr_change = self.entry_atr_increment if self.entry_atr_increment is not None else current_atr - self.signal_detection_atr
-                            atr_info = f" | ATR: {current_atr:.6f} (signal: {self.signal_detection_atr:.6f}, inc: {atr_change:+.6f})"
-                        print(
-                            f"LONG BREAKOUT ENTRY! High={current_high:.5f} >= target={self.breakout_target:.5f}{atr_info}")
-
-                    # ✅ CRITICAL FIX: Store ATR values BEFORE reset to preserve them for trade recording
-                    temp_signal_detection_atr = self.signal_detection_atr
-                    temp_entry_atr_increment = self.entry_atr_increment
+                if self.p.print_signals:
+                    atr_info = ""
+                    if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
+                        atr_change = self.entry_atr_increment if self.entry_atr_increment is not None else current_atr - self.signal_detection_atr
+                        atr_info = f" | ATR: {current_atr:.6f} (signal: {self.signal_detection_atr:.6f}, inc: {atr_change:+.6f})"
                     print(
-                        f"🔍 DEBUG SHORT: Before reset - signal_detection_atr={temp_signal_detection_atr}, entry_atr_increment={temp_entry_atr_increment}")  # DEBUG
+                        f"LONG BREAKOUT ENTRY! High={current_high:.5f} >= target={self.breakout_target:.5f}{atr_info}")
 
-                    # Reset state machine and trigger entry
-                    self._reset_pullback_state()
+                # ✅ CRITICAL FIX: Store ATR values BEFORE reset to preserve them for trade recording
+                temp_signal_detection_atr = self.signal_detection_atr
+                temp_entry_atr_increment = self.entry_atr_increment
+                print(
+                    f"🔍 DEBUG SHORT: Before reset - signal_detection_atr={temp_signal_detection_atr}, entry_atr_increment={temp_entry_atr_increment}")  # DEBUG
 
-                    # ✅ CRITICAL FIX: Restore ATR values AFTER reset for trade recording
-                    self.entry_signal_detection_atr = temp_signal_detection_atr
-                    self.entry_atr_increment = temp_entry_atr_increment
-                    print(
-                        f"🔍 DEBUG SHORT: After restore - entry_signal_detection_atr={self.entry_signal_detection_atr}, entry_atr_increment={self.entry_atr_increment}")  # DEBUG
+                # Reset state machine and trigger entry
+                self._reset_pullback_state()
 
-                    return True
+                # ✅ CRITICAL FIX: Restore ATR values AFTER reset for trade recording
+                self.entry_signal_detection_atr = temp_signal_detection_atr
+                self.entry_atr_increment = temp_entry_atr_increment
+                print(
+                    f"🔍 DEBUG SHORT: After restore - entry_signal_detection_atr={self.entry_signal_detection_atr}, entry_atr_increment={self.entry_atr_increment}")  # DEBUG
+
+                return True
             return False
 
         return False
@@ -3093,18 +3103,43 @@ class ITradingStrategyAUDUSD(bt.Strategy):
             print(f"Error cancelling orders: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Backward-compatible aliases
-# ---------------------------------------------------------------------------
-# 'ITradingStrategy' was the original generic name used by run_forex_live.py.
-# Any code that imports it by the old name will still work.
-ITradingStrategy = ITradingStrategyAUDUSD
+class ITradingStrategyAUDUSD(ITradingStrategy):
+    """AUD/USD strategy profile using the shared base strategy implementation."""
+
+    params = (
+        ('instrument_name', 'AUDUSD'),
+        ('enable_long_trades', True),
+        ('enable_short_trades', False),
+        ('ema_fast_length', 10),
+        ('ema_medium_length', 20),
+        ('ema_slow_length', 24),
+        ('ema_confirm_length', 5),
+        ('ema_filter_price_length', 40),
+        ('atr_length', 10),
+        ('use_time_range_filter', True),
+        ('entry_start_hour', 23),
+        ('entry_start_minute', 0),
+        ('entry_end_hour', 16),
+        ('entry_end_minute', 0),
+        ('long_atr_sl_multiplier', 4.4),
+        ('long_atr_tp_multiplier', 6.8),
+        ('short_atr_sl_multiplier', 2.5),
+        ('short_atr_tp_multiplier', 6.5),
+        ('long_atr_min_threshold', 0.00015),
+        ('long_atr_max_threshold', 0.0005),
+        ('short_atr_min_threshold', 0.000400),
+        ('short_atr_max_threshold', 0.000750),
+        ('forex_base_currency', 'AUD'),
+        ('forex_quote_currency', 'USD'),
+        ('forex_pip_value', 0.0001),
+        ('forex_pip_decimal_places', 5),
+    )
 
 
-class ITradingStrategyEURUSD(ITradingStrategyAUDUSD):
+class ITradingStrategyEURUSD(ITradingStrategy):
     """EUR/USD trading strategy.
 
-    Inherits the full ITradingStrategyAUDUSD infrastructure and overrides
+    Inherits the shared ITradingStrategy base implementation and overrides
     parameters with values optimized for the EUR/USD forex pair.
 
     Key EURUSD-specific characteristics:
@@ -3185,3 +3220,80 @@ class ITradingStrategyEURUSD(ITradingStrategyAUDUSD):
         ('entry_end_hour', 21),     # 21:00 UTC – NY session close
         ('entry_end_minute', 0),
     )
+
+
+class ITradingStrategyGBPUSD(ITradingStrategy):
+    """GBP/USD trading strategy profile derived from the standalone GBPUSD system.
+
+    This profile keeps the shared strategy engine while applying the long-only,
+    volatility, pullback, and forex settings tuned in `gbpusd.py`.
+    """
+
+    params = (
+        # === INSTRUMENT ===
+        ('instrument_name', 'GBPUSD'),
+        ('forex_base_currency', 'GBP'),
+        ('forex_quote_currency', 'USD'),
+        ('forex_pip_value', 0.0001),
+        ('forex_pip_decimal_places', 4),
+        ('contract_size', 100000),
+        ('forex_spread_pips', 2.2),
+        ('forex_margin_required', 3.33),
+
+        # === TRADING DIRECTION (GBPUSD sample is LONG-only) ===
+        ('enable_long_trades', True),
+        ('enable_short_trades', False),
+
+        # === TECHNICAL INDICATORS ===
+        ('ema_fast_length', 18),
+        ('ema_medium_length', 18),
+        ('ema_slow_length', 24),
+        ('ema_confirm_length', 1),
+        ('ema_filter_price_length', 70),
+        ('ema_exit_length', 25),
+        ('atr_length', 10),
+
+        # === LONG ATR VOLATILITY FILTER ===
+        ('long_use_atr_filter', False),
+        ('long_atr_min_threshold', 0.000300),
+        ('long_atr_max_threshold', 0.000700),
+        ('long_use_atr_increment_filter', False),
+        ('long_atr_increment_min_threshold', 0.000001),
+        ('long_atr_increment_max_threshold', 0.001000),
+        ('long_use_atr_decrement_filter', False),
+        ('long_atr_decrement_min_threshold', -0.000050),
+        ('long_atr_decrement_max_threshold', -0.000001),
+
+        # === LONG ENTRY FILTERS ===
+        ('long_use_ema_order_condition', False),
+        ('long_use_price_filter_ema', True),
+        ('long_use_candle_direction_filter', False),
+        ('long_use_angle_filter', True),
+        ('long_min_angle', 45.0),
+        ('long_max_angle', 95.0),
+        ('long_angle_scale_factor', 10000.0),
+
+        # === RISK MANAGEMENT ===
+        ('long_atr_sl_multiplier', 3.5),
+        ('long_atr_tp_multiplier', 6.5),
+
+        # === PULLBACK / VOLATILITY EXPANSION ENTRY ===
+        ('long_use_pullback_entry', True),
+        ('long_pullback_max_candles', 2),
+        ('long_entry_window_periods', 1),
+        ('use_window_time_offset', False),
+        ('window_offset_multiplier', 1.0),
+        ('window_price_offset_multiplier', 1.0),
+
+        # === TIME FILTER ===
+        ('use_time_range_filter', False),
+        ('entry_start_hour', 7),
+        ('entry_start_minute', 0),
+        ('entry_end_hour', 18),
+        ('entry_end_minute', 0),
+
+        # === REPORTING / DEBUG ===
+        ('verbose_debug', False),
+        ('export_trade_reports', True),
+    )
+

@@ -19,6 +19,16 @@ from itrading.src.logger import ITradingLogger
 from itrading.src.live_lifecycle_bridge import LiveLifecycleBridge
 from itrading.src.strategy import ITradingStrategyAUDUSD as DefaultITradingStrategy
 
+# --- Strategy Resolution Defaults ---
+DEFAULT_STRATEGY_MODULE = 'itrading.src.strategy'
+DEFAULT_FOREX_INSTRUMENT = 'AUDUSD'
+DEFAULT_STRATEGY_CLASS_NAME = 'ITradingStrategyAUDUSD'
+STRATEGY_CLASS_BY_INSTRUMENT = {
+    'AUDUSD': 'ITradingStrategyAUDUSD',
+    'EURUSD': 'ITradingStrategyEURUSD',
+    'GBPUSD': 'ITradingStrategyGBPUSD',
+}
+
 # --- Global Configuration ---
 ib = IB()
 logger = ITradingLogger()
@@ -31,13 +41,53 @@ live_strategy_state = None
 live_lifecycle_bridge: Optional[LiveLifecycleBridge] = None
 last_bt_cycle_summary: Optional[dict] = None
 active_strategy_class = DefaultITradingStrategy
-active_strategy_label = "itrading.src.strategy.ITradingStrategyAUDUSD"
+active_strategy_label = f"{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME}"
+
+
+def _default_strategy_class_name_for_instrument(instrument: str) -> str:
+    instrument_key = str(instrument or DEFAULT_FOREX_INSTRUMENT).strip().upper() or DEFAULT_FOREX_INSTRUMENT
+    return STRATEGY_CLASS_BY_INSTRUMENT.get(instrument_key, DEFAULT_STRATEGY_CLASS_NAME)
+
+
+def _normalize_live_params(params: dict) -> dict:
+    """Keep live config internally consistent across instrument, strategy class, and strategy params."""
+    normalized = dict(params or {})
+
+    instrument_override = os.getenv('ITRADING_FOREX_INSTRUMENT', '').strip().upper()
+    configured_instrument = str(normalized.get('FOREX_INSTRUMENT', DEFAULT_FOREX_INSTRUMENT)).strip().upper()
+    instrument = instrument_override or configured_instrument or DEFAULT_FOREX_INSTRUMENT
+    normalized['FOREX_INSTRUMENT'] = instrument
+
+    strategy_params = dict(normalized.get('STRATEGY_PARAMS') or {})
+    strategy_params['instrument_name'] = instrument
+    normalized['STRATEGY_PARAMS'] = strategy_params
+
+    module_name = str(normalized.get('STRATEGY_MODULE', DEFAULT_STRATEGY_MODULE)).strip()
+    normalized['STRATEGY_MODULE'] = module_name or DEFAULT_STRATEGY_MODULE
+
+    class_name = str(normalized.get('STRATEGY_CLASS', '')).strip()
+    configured_default_class = _default_strategy_class_name_for_instrument(configured_instrument or instrument)
+    target_default_class = _default_strategy_class_name_for_instrument(instrument)
+    if not class_name or (instrument_override and class_name == configured_default_class):
+        normalized['STRATEGY_CLASS'] = target_default_class
+
+    if instrument_override and instrument_override != configured_instrument:
+        logger.info(
+            f"Overriding FOREX_INSTRUMENT from {configured_instrument or DEFAULT_FOREX_INSTRUMENT} "
+            f"to {instrument_override} via ITRADING_FOREX_INSTRUMENT")
+
+    if not normalized.get('PRICE_PRECISION'):
+        normalized['PRICE_PRECISION'] = 5
+
+    return normalized
 
 
 def resolve_strategy_class(params: dict):
     """Resolve strategy class from params with fallback to the default strategy."""
-    module_name = str(params.get('STRATEGY_MODULE', 'itrading.src.strategy')).strip() or 'itrading.src.strategy'
-    class_name = str(params.get('STRATEGY_CLASS', 'ITradingStrategyAUDUSD')).strip() or 'ITradingStrategyAUDUSD'
+    instrument = str(params.get('FOREX_INSTRUMENT', DEFAULT_FOREX_INSTRUMENT)).strip().upper() or DEFAULT_FOREX_INSTRUMENT
+    default_class_name = _default_strategy_class_name_for_instrument(instrument)
+    module_name = str(params.get('STRATEGY_MODULE', DEFAULT_STRATEGY_MODULE)).strip() or DEFAULT_STRATEGY_MODULE
+    class_name = str(params.get('STRATEGY_CLASS', default_class_name)).strip() or default_class_name
     label = f"{module_name}.{class_name}"
 
     try:
@@ -45,10 +95,16 @@ def resolve_strategy_class(params: dict):
         strategy_cls = getattr(module, class_name)
         return strategy_cls, label
     except Exception as exc:
-        fallback_label = "itrading.src.strategy.ITradingStrategyAUDUSD"
+        fallback_label = f"{DEFAULT_STRATEGY_MODULE}.{default_class_name}"
+        try:
+            fallback_module = importlib.import_module(DEFAULT_STRATEGY_MODULE)
+            fallback_strategy_cls = getattr(fallback_module, default_class_name)
+        except Exception:
+            fallback_strategy_cls = DefaultITradingStrategy
+            fallback_label = f"{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME}"
         logger.warning(
             f"Could not load configured strategy {label}: {exc}. Falling back to {fallback_label}.")
-        return DefaultITradingStrategy, fallback_label
+        return fallback_strategy_cls, fallback_label
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -280,7 +336,7 @@ def load_params():
 
     logger.info(f"Loading parameters from: {params_path}")
     with open(params_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        return _normalize_live_params(json.load(f))
 
 async def execute_live_trade(contract, signal, params):
     """Translates a strategy signal into a live bracket order."""
@@ -378,7 +434,7 @@ async def run_strategy_on_live_bar(live_bars):
     4. No orders are placed here - only signals are generated
     """
     global historical_df, last_live_processed_dt, live_strategy_state, last_bt_cycle_summary
-    strategy_label = globals().get('active_strategy_label', 'itrading.src.strategy.ITradingStrategyAUDUSD')
+    strategy_label = globals().get('active_strategy_label', f'{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME}')
     logger.info(f"--- Analyzing new 5-minute interval with {strategy_label} (Live Mode) ---")
     params = load_params()
     
@@ -492,7 +548,7 @@ async def run_strategy_on_live_bar(live_bars):
 async def run_historical_analysis(params):
     """Runs the strategy on historical data to warm up and generate a report."""
     global historical_df
-    strategy_label = globals().get('active_strategy_label', 'itrading.src.strategy.ITradingStrategyAUDUSD')
+    strategy_label = globals().get('active_strategy_label', f'{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME}')
     logger.info(f"--- Running {strategy_label} on historical data (no orders) to warm up... ---")
 
     contract = Forex(params['FOREX_INSTRUMENT'])
