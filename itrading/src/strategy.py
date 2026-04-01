@@ -1860,7 +1860,8 @@ class ITradingStrategy(bt.Strategy):
                             'direction': signal_direction,
                             'size': bt_size,
                             'stop_loss': self.stop_level,
-                            'take_profit': self.take_level
+                            'take_profit': self.take_level,
+                            'signal_bar_time': dt.isoformat()
                         }
                         self.p.signal_queue.put(signal)
                         print(f"📬 SIGNAL EMITTED: {signal_direction} size={bt_size} SL={self.stop_level:.5f} TP={self.take_level:.5f}")

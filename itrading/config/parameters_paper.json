@@ -6,6 +6,7 @@
   "BAR_SIZE": "5 mins",
   "HIST_DURATION": "3 D",
   "STARTING_CASH": 10000.0,
+  "ALLOW_MULTIPLE_POSITIONS_PER_SYMBOL": false,
   "PRICE_PRECISION": 5,
   "STRATEGY_PARAMS": {
     "enable_long_trades": true,
@@ -31,7 +32,7 @@
     "entry_start_minute": 0,
     "entry_end_hour": 23,
     "entry_end_minute": 59,
-    "enable_risk_sizing": false,
+    "enable_risk_sizing": true,
     "size": 0.01,
     "risk_percent": 0.01,
     "long_atr_sl_multiplier": 4.4,

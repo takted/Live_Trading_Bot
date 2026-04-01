@@ -5,6 +5,7 @@ import queue
 import sys
 from pathlib import Path
 from typing import Any, Optional
+from datetime import datetime, timedelta, timezone
 
 import backtrader as bt
 import pandas as pd
@@ -27,6 +28,7 @@ g_last_tick_info = None
 last_live_processed_dt = None
 live_strategy_state = None
 live_lifecycle_bridge: Optional[LiveLifecycleBridge] = None
+last_bt_cycle_summary: Optional[dict] = None
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -41,6 +43,41 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _parse_signal_bar_time(signal: dict) -> Optional[datetime]:
+    """Parse strategy-emitted signal bar time into a naive UTC datetime for comparisons."""
+    raw_value = signal.get('signal_bar_time')
+    if not raw_value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(str(raw_value))
+    except (TypeError, ValueError):
+        return None
+
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _is_signal_fresh(signal: dict, latest_live_dt: datetime, max_age_seconds: int) -> tuple[bool, str]:
+    """Validate that a signal belongs to the latest bar and is not stale in wall-clock time."""
+    signal_dt = _parse_signal_bar_time(signal)
+    if signal_dt is None:
+        return False, "missing-or-invalid signal_bar_time"
+
+    # Narrow type for static analyzers.
+    signal_dt = signal_dt
+
+    if signal_dt != latest_live_dt:
+        return False, f"signal bar {signal_dt} != latest live bar {latest_live_dt}"
+
+    now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    if signal_dt < now_utc_naive - timedelta(seconds=max_age_seconds):
+        return False, f"signal too old ({(now_utc_naive - signal_dt).total_seconds():.0f}s > {max_age_seconds}s)"
+
+    return True, "ok"
 
 
 def _on_ib_order_status_event(*args):
@@ -92,6 +129,43 @@ def _setup_ib_lifecycle_handlers():
         ib.execDetailsEvent += _on_ib_exec_details_event
     else:
         logger.warning("IB client does not expose execDetailsEvent; live lifecycle fill mirroring is limited.")
+
+
+def _has_open_position_for_forex_pair(forex_pair: str) -> bool:
+    """Return True if IB currently has a non-zero net position for the given FX pair (e.g. AUDUSD)."""
+    pair = (forex_pair or '').strip().upper()
+    if len(pair) < 6:
+        return False
+
+    base = pair[:3]
+    quote = pair[3:6]
+
+    try:
+        positions = ib.positions()
+    except Exception as exc:
+        logger.warning(f"Could not fetch IB positions for single-position guard: {exc}")
+        return False
+
+    for pos in positions:
+        contract = getattr(pos, 'contract', None)
+        qty = _safe_float(getattr(pos, 'position', 0.0), 0.0)
+        if abs(qty) <= 0.0:
+            continue
+
+        symbol = str(getattr(contract, 'symbol', '')).upper()
+        currency = str(getattr(contract, 'currency', '')).upper()
+        sec_type = str(getattr(contract, 'secType', '')).upper()
+        local_symbol = str(getattr(contract, 'localSymbol', '')).upper().replace('.', '')
+
+        matches_pair = (
+            (symbol == base and currency == quote and sec_type in {'CASH', 'IDEALPRO', 'FOREX'}) or
+            (local_symbol == pair)
+        )
+        if matches_pair:
+            logger.info(f"Position guard: existing {pair} position detected (qty={qty}).")
+            return True
+
+    return False
 
 
 def _normalize_ib_bars_df(df, source_name):
@@ -283,7 +357,7 @@ async def run_strategy_on_live_bar(live_bars):
     3. Signal is emitted to queue if conditions are met
     4. No orders are placed here - only signals are generated
     """
-    global historical_df, last_live_processed_dt, live_strategy_state
+    global historical_df, last_live_processed_dt, live_strategy_state, last_bt_cycle_summary
     logger.info("--- Analyzing new 5-minute interval with ITradingStrategy (Live Mode) ---")
     params = load_params()
     
@@ -297,6 +371,8 @@ async def run_strategy_on_live_bar(live_bars):
     if live_df is None or live_df.empty:
         logger.info("No completed 5-minute live bar available yet. Skipping this cycle.")
         return
+
+    latest_live_dt = live_df.index.max().to_pydatetime()
 
     # =====================================================================
     # CRITICAL: Combine historical data with current live bar
@@ -347,16 +423,43 @@ async def run_strategy_on_live_bar(live_bars):
 
         # Persist strategy state so next cycle continues from current live context.
         if run_results:
-            live_strategy_state = getattr(run_results[0], 'live_state_snapshot', live_strategy_state)
+            strat = run_results[0]
+            live_strategy_state = getattr(strat, 'live_state_snapshot', live_strategy_state)
 
-        latest_live_dt = live_df.index.max().to_pydatetime()
+            # Capture the most recent Backtrader-side snapshot for end-of-run dual summary.
+            last_bt_cycle_summary = {
+                'final_value': _safe_float(getattr(strat.broker, 'get_value', lambda: params['STARTING_CASH'])()),
+                'starting_cash': _safe_float(params.get('STARTING_CASH', 0.0)),
+                'trades': _safe_int(getattr(strat, 'trades', 0), 0),
+                'wins': _safe_int(getattr(strat, 'wins', 0), 0),
+                'losses': _safe_int(getattr(strat, 'losses', 0), 0),
+                'gross_profit': _safe_float(getattr(strat, 'gross_profit', 0.0), 0.0),
+                'gross_loss': _safe_float(getattr(strat, 'gross_loss', 0.0), 0.0),
+                'last_processed_bar_dt': latest_live_dt,
+            }
         last_live_processed_dt = latest_live_dt
         
         # Try to get signal from queue with short timeout
         # The strategy.next() method will emit to queue if conditions are met
         try:
             signal = signal_queue.get_nowait()  # Non-blocking get
-            logger.info(f"✅ Signal received from strategy: {signal}")
+
+            max_age_seconds = int(params.get('LIVE_MAX_SIGNAL_AGE_SECONDS', 420))
+            is_fresh, reason = _is_signal_fresh(signal, latest_live_dt, max_age_seconds)
+            if not is_fresh:
+                logger.warning(
+                    f"⚠️ Stale signal blocked (no order sent): {reason} | signal={signal}")
+                return
+
+            logger.info(f"✅ Signal received from strategy (fresh): {signal}")
+
+            allow_multiple = bool(params.get('ALLOW_MULTIPLE_POSITIONS_PER_SYMBOL', False))
+            if not allow_multiple and _has_open_position_for_forex_pair(params['FOREX_INSTRUMENT']):
+                logger.info(
+                    f"Skipping order: existing position already open for {params['FOREX_INSTRUMENT']} "
+                    f"(ALLOW_MULTIPLE_POSITIONS_PER_SYMBOL={allow_multiple})")
+                return
+
             contract = Forex(params['FOREX_INSTRUMENT'])
             await ib.qualifyContractsAsync(contract)
             await execute_live_trade(contract, signal, params)
@@ -405,9 +508,10 @@ async def run_historical_analysis(params):
 
 async def run_bot():
     """Core logic: connect, run historical analysis, then switch to live trading."""
-    global last_live_processed_dt, live_strategy_state, live_lifecycle_bridge
+    global last_live_processed_dt, live_strategy_state, live_lifecycle_bridge, last_bt_cycle_summary
     last_live_processed_dt = None
     live_strategy_state = None
+    last_bt_cycle_summary = None
 
     params = load_params()
     strategy_params = params.get('STRATEGY_PARAMS', {})
@@ -435,6 +539,24 @@ async def run_bot():
         if live_bars:
             ib.cancelRealTimeBars(live_bars)
             logger.info("Real-time bars subscription cancelled.")
+
+        if last_bt_cycle_summary is not None:
+            bt_final_value = _safe_float(last_bt_cycle_summary.get('final_value', 0.0), 0.0)
+            bt_start_cash = _safe_float(last_bt_cycle_summary.get('starting_cash', 0.0), 0.0)
+            bt_trades = _safe_int(last_bt_cycle_summary.get('trades', 0), 0)
+            bt_wins = _safe_int(last_bt_cycle_summary.get('wins', 0), 0)
+            bt_losses = _safe_int(last_bt_cycle_summary.get('losses', 0), 0)
+            bt_gross_profit = _safe_float(last_bt_cycle_summary.get('gross_profit', 0.0), 0.0)
+            bt_gross_loss = _safe_float(last_bt_cycle_summary.get('gross_loss', 0.0), 0.0)
+            bt_win_rate = (bt_wins / bt_trades * 100.0) if bt_trades else 0.0
+            bt_pf = (bt_gross_profit / bt_gross_loss) if bt_gross_loss > 0 else float('inf')
+            bt_net = bt_final_value - bt_start_cash
+            bt_bar_dt = last_bt_cycle_summary.get('last_processed_bar_dt')
+            logger.info(
+                f"[BT-SNAPSHOT] Session summary | last_bar={bt_bar_dt} | trades={bt_trades} wins={bt_wins} "
+                f"losses={bt_losses} win_rate={bt_win_rate:.2f}% pf={bt_pf:.2f} "
+                f"final_value={bt_final_value:.2f} net_pnl={bt_net:.2f}")
+
         if live_lifecycle_bridge is not None:
             stats = live_lifecycle_bridge.get_stats_snapshot()
             logger.info(

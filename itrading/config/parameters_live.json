@@ -6,6 +6,7 @@
   "BAR_SIZE": "5 mins",
   "HIST_DURATION": "3 D",
   "STARTING_CASH": 10000.0,
+  "ALLOW_MULTIPLE_POSITIONS_PER_SYMBOL": false,
   "PRICE_PRECISION": 5,
   "STRATEGY_PARAMS": {
     "enable_long_trades": true,
