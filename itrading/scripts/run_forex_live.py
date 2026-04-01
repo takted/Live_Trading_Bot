@@ -17,7 +17,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from itrading.src.logger import ITradingLogger
 from itrading.src.live_lifecycle_bridge import LiveLifecycleBridge
-from itrading.src.strategy import ITradingStrategy as DefaultITradingStrategy
+from itrading.src.strategy import ITradingStrategyAUDUSD as DefaultITradingStrategy
 
 # --- Global Configuration ---
 ib = IB()
@@ -31,13 +31,13 @@ live_strategy_state = None
 live_lifecycle_bridge: Optional[LiveLifecycleBridge] = None
 last_bt_cycle_summary: Optional[dict] = None
 active_strategy_class = DefaultITradingStrategy
-active_strategy_label = "itrading.src.strategy.ITradingStrategy"
+active_strategy_label = "itrading.src.strategy.ITradingStrategyAUDUSD"
 
 
 def resolve_strategy_class(params: dict):
     """Resolve strategy class from params with fallback to the default strategy."""
     module_name = str(params.get('STRATEGY_MODULE', 'itrading.src.strategy')).strip() or 'itrading.src.strategy'
-    class_name = str(params.get('STRATEGY_CLASS', 'ITradingStrategy')).strip() or 'ITradingStrategy'
+    class_name = str(params.get('STRATEGY_CLASS', 'ITradingStrategyAUDUSD')).strip() or 'ITradingStrategyAUDUSD'
     label = f"{module_name}.{class_name}"
 
     try:
@@ -45,7 +45,7 @@ def resolve_strategy_class(params: dict):
         strategy_cls = getattr(module, class_name)
         return strategy_cls, label
     except Exception as exc:
-        fallback_label = "itrading.src.strategy.ITradingStrategy"
+        fallback_label = "itrading.src.strategy.ITradingStrategyAUDUSD"
         logger.warning(
             f"Could not load configured strategy {label}: {exc}. Falling back to {fallback_label}.")
         return DefaultITradingStrategy, fallback_label
@@ -378,7 +378,7 @@ async def run_strategy_on_live_bar(live_bars):
     4. No orders are placed here - only signals are generated
     """
     global historical_df, last_live_processed_dt, live_strategy_state, last_bt_cycle_summary
-    strategy_label = globals().get('active_strategy_label', 'itrading.src.strategy.ITradingStrategy')
+    strategy_label = globals().get('active_strategy_label', 'itrading.src.strategy.ITradingStrategyAUDUSD')
     logger.info(f"--- Analyzing new 5-minute interval with {strategy_label} (Live Mode) ---")
     params = load_params()
     
@@ -492,7 +492,7 @@ async def run_strategy_on_live_bar(live_bars):
 async def run_historical_analysis(params):
     """Runs the strategy on historical data to warm up and generate a report."""
     global historical_df
-    strategy_label = globals().get('active_strategy_label', 'itrading.src.strategy.ITradingStrategy')
+    strategy_label = globals().get('active_strategy_label', 'itrading.src.strategy.ITradingStrategyAUDUSD')
     logger.info(f"--- Running {strategy_label} on historical data (no orders) to warm up... ---")
 
     contract = Forex(params['FOREX_INSTRUMENT'])

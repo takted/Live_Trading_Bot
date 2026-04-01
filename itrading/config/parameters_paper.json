@@ -8,6 +8,8 @@
   "STARTING_CASH": 10000.0,
   "ALLOW_MULTIPLE_POSITIONS_PER_SYMBOL": false,
   "PRICE_PRECISION": 5,
+  "STRATEGY_MODULE": "itrading.src.strategy",
+  "STRATEGY_CLASS": "ITradingStrategyAUDUSD",
   "STRATEGY_PARAMS": {
     "enable_long_trades": true,
     "enable_short_trades": true,

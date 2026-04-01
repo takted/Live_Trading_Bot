@@ -194,7 +194,7 @@ guarantee future results. Validate all logic and data quality before
 using in any live or simulated trading environment.
 """
 
-class ITradingStrategy(bt.Strategy):
+class ITradingStrategyAUDUSD(bt.Strategy):
     params = dict(
         # === LIVE TRADING / SIGNALING ===
         live_trading=False,
@@ -3079,9 +3079,15 @@ class ITradingStrategy(bt.Strategy):
             print(f"Error cancelling orders: {e}")
 
 
-class ITradingStrategyAUDUSD(ITradingStrategy):
-    """Instrument-specific alias for AUDUSD deployment profiles."""
-    params = (
-        ('instrument_name', 'AUDUSD'),
-    )
+# ---------------------------------------------------------------------------
+# Backward-compatible aliases
+# ---------------------------------------------------------------------------
+# 'ITradingStrategy' was the original generic name used by run_forex_live.py.
+# Any code that imports it by the old name will still work.
+ITradingStrategy = ITradingStrategyAUDUSD
 
+# EURUSD alias – strategy class referenced by parameters_live_eurusd.json.
+# Currently shares the same implementation; replace with a dedicated subclass
+# (see strategies/itrading_strategy_eurusd.py) when EURUSD-specific tuning
+# is required.
+ITradingStrategyEURUSD = ITradingStrategyAUDUSD

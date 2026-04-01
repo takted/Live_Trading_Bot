@@ -7,6 +7,8 @@
   "HIST_DURATION": "3 D",
   "STARTING_CASH": 10000.0,
   "PRICE_PRECISION": 5,
+  "STRATEGY_MODULE": "itrading.src.strategy",
+  "STRATEGY_CLASS": "ITradingStrategyAUDUSD",
   "STRATEGY_PARAMS": {
     "enable_long_trades": true,
     "enable_short_trades": false,
