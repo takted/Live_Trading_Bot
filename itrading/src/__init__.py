@@ -19,3 +19,4 @@ from itrading.src.connection import ITradingConnection
 from .position import ITradingPositionManager
 from .constants import SecurityType
 from .strategy import ITradingStrategy
+from .live_lifecycle_bridge import LiveLifecycleBridge

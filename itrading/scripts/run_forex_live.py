@@ -1,8 +1,11 @@
 import asyncio
 import json
+import os
 import queue
 import sys
 from pathlib import Path
+from typing import Any, Optional
+
 import backtrader as bt
 import pandas as pd
 from ib_async import IB, Forex, util, Order
@@ -11,6 +14,7 @@ from ib_async import IB, Forex, util, Order
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from itrading.src.logger import ITradingLogger
+from itrading.src.live_lifecycle_bridge import LiveLifecycleBridge
 from itrading.src.strategy import ITradingStrategy
 
 # --- Global Configuration ---
@@ -22,6 +26,72 @@ active_tasks = set()
 g_last_tick_info = None
 last_live_processed_dt = None
 live_strategy_state = None
+live_lifecycle_bridge: Optional[LiveLifecycleBridge] = None
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _on_ib_order_status_event(*args):
+    """Bridge IB order status events into normalized live lifecycle events."""
+    if live_lifecycle_bridge is None or not args:
+        return
+
+    trade = args[0]
+    order = getattr(trade, 'order', None)
+    status_obj = getattr(trade, 'orderStatus', None)
+    if order is None or status_obj is None:
+        return
+
+    live_lifecycle_bridge.on_order_status(
+        order_id=_safe_int(getattr(order, 'orderId', None), 0),
+        status=str(getattr(status_obj, 'status', '')),
+        filled=_safe_float(getattr(status_obj, 'filled', 0.0), 0.0),
+        remaining=_safe_float(getattr(status_obj, 'remaining', 0.0), 0.0),
+        avg_fill_price=_safe_float(getattr(status_obj, 'avgFillPrice', 0.0), 0.0),
+        last_fill_price=_safe_float(getattr(status_obj, 'lastFillPrice', 0.0), 0.0),
+    )
+
+
+def _on_ib_exec_details_event(*args):
+    """Bridge IB execution detail events into normalized live lifecycle events."""
+    if live_lifecycle_bridge is None or not args:
+        return
+
+    fill_obj = args[-1]
+    execution = getattr(fill_obj, 'execution', None)
+    if execution is None:
+        return
+
+    live_lifecycle_bridge.on_execution(
+        order_id=_safe_int(getattr(execution, 'orderId', None), 0),
+        price=_safe_float(getattr(execution, 'price', 0.0), 0.0),
+        quantity=_safe_float(getattr(execution, 'shares', 0.0), 0.0),
+    )
+
+
+def _setup_ib_lifecycle_handlers():
+    """Attach lifecycle bridge handlers to IB events when supported by the IB wrapper."""
+    if hasattr(ib, 'orderStatusEvent'):
+        ib.orderStatusEvent += _on_ib_order_status_event
+    else:
+        logger.warning("IB client does not expose orderStatusEvent; live lifecycle status mirroring is limited.")
+
+    if hasattr(ib, 'execDetailsEvent'):
+        ib.execDetailsEvent += _on_ib_exec_details_event
+    else:
+        logger.warning("IB client does not expose execDetailsEvent; live lifecycle fill mirroring is limited.")
 
 
 def _normalize_ib_bars_df(df, source_name):
@@ -90,9 +160,32 @@ def _to_latest_5min_bar(live_df):
     return live_5min.tail(1)
 
 def load_params():
-    """Loads parameters from the JSON config file."""
-    params_path = Path(__file__).resolve().parent.parent / 'config' / 'parameters.json'
-    with open(params_path, 'r') as f:
+    """Load parameters from profile-specific config with backward-compatible fallback.
+
+    Selection order:
+    1) ITRADING_PARAMS_FILE (absolute or relative path)
+    2) ITRADING_PARAMS_PROFILE in {live,paper} -> parameters_live.json / parameters_paper.json
+    3) legacy parameters.json
+    """
+    config_dir = Path(__file__).resolve().parent.parent / 'config'
+
+    explicit_path = os.getenv('ITRADING_PARAMS_FILE', '').strip()
+    profile = os.getenv('ITRADING_PARAMS_PROFILE', 'live').strip().lower()
+
+    if explicit_path:
+        params_path = Path(explicit_path)
+        if not params_path.is_absolute():
+            params_path = (Path.cwd() / params_path).resolve()
+    elif profile == 'paper':
+        params_path = config_dir / 'parameters_paper.json'
+    else:
+        params_path = config_dir / 'parameters_live.json'
+
+    if not params_path.exists():
+        params_path = config_dir / 'parameters.json'
+
+    logger.info(f"Loading parameters from: {params_path}")
+    with open(params_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 async def execute_live_trade(contract, signal, params):
@@ -132,10 +225,25 @@ async def execute_live_trade(contract, signal, params):
             transmit=True
         )
 
+        bridge_trade_id = None
+        if live_lifecycle_bridge is not None:
+            bridge_trade_id = live_lifecycle_bridge.register_signal(contract.symbol, signal)
+            live_lifecycle_bridge.register_bracket_orders(
+                trade_id=bridge_trade_id,
+                parent_order_id=parent_order_id,
+                take_profit_order_id=take_profit_order.orderId,
+                stop_loss_order_id=stop_loss_order.orderId,
+            )
+
         logger.info(f"Placing bracket order: {action} {quantity} {contract.symbol} SL: {stop_loss_price} TP: {take_profit_price}")
         ib.placeOrder(contract, parent_order)
         ib.placeOrder(contract, take_profit_order)
         ib.placeOrder(contract, stop_loss_order)
+
+        if live_lifecycle_bridge is not None and bridge_trade_id is not None:
+            live_lifecycle_bridge.on_order_status(parent_order_id, 'SUBMITTED')
+            live_lifecycle_bridge.on_order_status(take_profit_order.orderId, 'SUBMITTED')
+            live_lifecycle_bridge.on_order_status(stop_loss_order.orderId, 'SUBMITTED')
     except Exception as e:
         logger.error(f"Error placing live order: {e}", exc_info=True)
 
@@ -297,14 +405,18 @@ async def run_historical_analysis(params):
 
 async def run_bot():
     """Core logic: connect, run historical analysis, then switch to live trading."""
-    global last_live_processed_dt, live_strategy_state
+    global last_live_processed_dt, live_strategy_state, live_lifecycle_bridge
     last_live_processed_dt = None
     live_strategy_state = None
 
     params = load_params()
+    strategy_params = params.get('STRATEGY_PARAMS', {})
+    pip_value = strategy_params.get('forex_pip_value', 0.0001)
+    live_lifecycle_bridge = LiveLifecycleBridge(logger=logger, pip_value=float(pip_value))
     
     await ib.connectAsync(params['IB_HOST'], params['IB_PORT'], clientId=params['IB_CLIENT_ID'])
     logger.info("✅ Connected to Interactive Brokers")
+    _setup_ib_lifecycle_handlers()
 
     if not await run_historical_analysis(params):
         return
@@ -323,6 +435,12 @@ async def run_bot():
         if live_bars:
             ib.cancelRealTimeBars(live_bars)
             logger.info("Real-time bars subscription cancelled.")
+        if live_lifecycle_bridge is not None:
+            stats = live_lifecycle_bridge.get_stats_snapshot()
+            logger.info(
+                f"[LIVE-BRIDGE] Session summary | trades={stats['trades']} wins={stats['wins']} "
+                f"losses={stats['losses']} win_rate={stats['win_rate']:.2f}% "
+                f"pf={stats['profit_factor']:.2f} net_pnl={stats['net_pnl']:.2f}")
 
 async def main():
     """Main entry point with graceful shutdown."""

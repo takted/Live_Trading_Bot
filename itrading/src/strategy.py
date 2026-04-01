@@ -843,6 +843,7 @@ class ITradingStrategy(bt.Strategy):
         self.pullback_candle_count = 0
         self.last_pullback_candle_high = None
         self.last_pullback_candle_low = None
+        self.window_bar_start = None
         self.window_top_limit = None
         self.window_bottom_limit = None
         self.window_expiry_bar = None
@@ -905,7 +906,7 @@ class ITradingStrategy(bt.Strategy):
         keys = [
             'entry_state', 'armed_direction', 'pullback_candle_count',
             'last_pullback_candle_high', 'last_pullback_candle_low',
-            'window_top_limit', 'window_bottom_limit', 'window_expiry_bar',
+            'window_bar_start', 'window_top_limit', 'window_bottom_limit', 'window_expiry_bar',
             'window_breakout_level', 'signal_trigger_candle',
             'signal_detection_atr', 'signal_detection_bar',
             'entry_window_start', 'breakout_target'
@@ -922,6 +923,7 @@ class ITradingStrategy(bt.Strategy):
             'pullback_candle_count': self.pullback_candle_count,
             'last_pullback_candle_high': self.last_pullback_candle_high,
             'last_pullback_candle_low': self.last_pullback_candle_low,
+            'window_bar_start': self.window_bar_start,
             'window_top_limit': self.window_top_limit,
             'window_bottom_limit': self.window_bottom_limit,
             'window_expiry_bar': self.window_expiry_bar,
@@ -1072,6 +1074,7 @@ class ITradingStrategy(bt.Strategy):
         self.pullback_candle_count = 0
         self.last_pullback_candle_high = None
         self.last_pullback_candle_low = None
+        self.window_bar_start = None
         self.window_top_limit = None
         self.window_bottom_limit = None
         self.window_expiry_bar = None
@@ -1372,11 +1375,18 @@ class ITradingStrategy(bt.Strategy):
             str: 'SUCCESS' if breakout detected, None if no action needed
         """
         current_bar = len(self)
+        window_bar_start = getattr(self, 'window_bar_start', None)
+        if window_bar_start is None:
+            # Defensive fallback for legacy live snapshots missing this field.
+            self.window_bar_start = current_bar
+            window_bar_start = current_bar
+            self._lifecycle_debug(
+                f"phase4 {armed_direction} missing window_bar_start; defaulting to current bar {current_bar}")
 
         # Check if window is active yet
-        if current_bar < self.window_bar_start:
+        if current_bar < window_bar_start:
             self._lifecycle_debug(
-                f"phase4 {armed_direction} waiting start | bar={current_bar} window_start={self.window_bar_start}")
+                f"phase4 {armed_direction} waiting start | bar={current_bar} window_start={window_bar_start}")
             return None  # Not yet active, do nothing
 
         # Check for Timeout
