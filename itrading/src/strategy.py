@@ -3031,7 +3031,8 @@ class ITradingStrategy(bt.Strategy):
 
         # Backtrader portfolio value
         final_value = self.broker.get_value()
-        starting_cash = 10000.0  # Known starting value
+        # STARTING_CASH comes from parameters JSON in the runner via cerebro.broker.setcash(...)
+        starting_cash = float(getattr(self.broker, 'startingcash', final_value))
         total_pnl = final_value - starting_cash
 
         print(f"Trades: {self.trades} Wins: {self.wins} Losses: {self.losses} WinRate: {wr:.2f}% PF: {pf:.2f}")

@@ -19,7 +19,7 @@ Available Strategies:
 
 # Import all strategies for easier access
 try:
-    from .sunrise_ogle_eurusd import SunriseOgle as SunriseOgleEURUSD
+    from itrading.src.strategy_eurusd import SunriseOgle as SunriseOgleEURUSD
 except ImportError:
     SunriseOgleEURUSD = None
 
