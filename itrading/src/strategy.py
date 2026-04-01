@@ -1280,18 +1280,89 @@ class ITradingStrategy(bt.Strategy):
                         f"| prev_bull={prev_bull} | atr={current_atr:.6f}")
                     return 'LONG'
             elif self.p.live_trading:
+                # === PHASE1 LONG GATE-FAIL DIAGNOSTIC ===
+                _ec0 = float(self.ema_confirm[0])
+                _ef0 = float(self.ema_fast[0])
+                _em0 = float(self.ema_medium[0])
+                _es0 = float(self.ema_slow[0])
+                try:
+                    _ec1 = float(self.ema_confirm[-1])
+                    _ef1 = float(self.ema_fast[-1])
+                    _em1 = float(self.ema_medium[-1])
+                    _es1 = float(self.ema_slow[-1])
+                except (IndexError, TypeError):
+                    _ec1 = _ef1 = _em1 = _es1 = float('nan')
+                try:
+                    _p_close = float(self.data.close[-1])
+                    _p_open = float(self.data.open[-1])
+                except (IndexError, TypeError):
+                    _p_close = _p_open = float('nan')
+                _candle_diff = (_p_close - _p_open) if not (math.isnan(_p_close) or math.isnan(_p_open)) else float('nan')
+                _angle_val = self._angle()
+                _atr_val = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                try:
+                    _price_curr = float(self.data.close[0])
+                    _filter_ema_val = float(self.ema_filter_price[0])
+                    _price_above = _price_curr > _filter_ema_val
+                except (IndexError, TypeError):
+                    _price_curr = _filter_ema_val = float('nan')
+                    _price_above = None
+                _angle_ok = self.p.long_min_angle <= _angle_val <= self.p.long_max_angle
+                _atr_ok = self.p.long_atr_min_threshold <= _atr_val <= self.p.long_atr_max_threshold
+                _candle_bull = (_candle_diff > 0) if not math.isnan(_candle_diff) else None
                 self._lifecycle_debug(
                     f"phase1 LONG blocked | candle_ok={candle_direction_ok} prev_bull={prev_bull} "
-                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow})")
+                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow})\n"
+                    f"  ↳ [EMA CURR] confirm={_ec0:.5f}  fast={_ef0:.5f}  med={_em0:.5f}  slow={_es0:.5f}\n"
+                    f"  ↳ [EMA PREV] confirm={_ec1:.5f}  fast={_ef1:.5f}  med={_em1:.5f}  slow={_es1:.5f}\n"
+                    f"  ↳ [CROSS GAP] conf-fast={_ec0 - _ef0:+.5f}  conf-med={_ec0 - _em0:+.5f}  conf-slow={_ec0 - _es0:+.5f}  "
+                    f"(+ve=confirm above EMA; crossover needs: curr>0 AND prev≤0)\n"
+                    f"  ↳ [PREV CANDLE] close={_p_close:.5f}  open={_p_open:.5f}  diff={_candle_diff:+.5f}  "
+                    f"({'BULL ✅' if _candle_bull else 'BEAR ❌'})  "
+                    f"[candle_filter={'ON → requires BULL to gate-pass' if self.p.long_use_candle_direction_filter else 'OFF → no candle requirement'}]\n"
+                    f"  ↳ [LOOK-AHEAD] angle={_angle_val:.2f}° [{self.p.long_min_angle:.1f},{self.p.long_max_angle:.1f}] "
+                    f"{'✅' if _angle_ok else '❌'}  "
+                    f"| atr={_atr_val:.6f} [{self.p.long_atr_min_threshold:.6f},{self.p.long_atr_max_threshold:.6f}] "
+                    f"{'✅' if _atr_ok else '❌'}  "
+                    f"| price_filter={'ON' if self.p.long_use_price_filter_ema else 'OFF'} "
+                    f"close={_price_curr:.5f} vs filter_ema={_filter_ema_val:.5f} {'✅' if _price_above else '❌'}"
+                )
 
             if self.p.live_trading and candle_direction_ok and cross_any and not signal_valid:
-                current_angle = self._angle() if self.p.long_use_angle_filter else float('nan')
-                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                # === PHASE1 LONG SECONDARY FILTER DIAGNOSTIC (gate passed, filters blocked) ===
+                _angle_val = self._angle()
+                _atr_val = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                _ec0 = float(self.ema_confirm[0])
+                _ef0 = float(self.ema_fast[0])
+                _em0 = float(self.ema_medium[0])
+                _es0 = float(self.ema_slow[0])
+                _ema_order_ok = _ec0 > _ef0 and _ec0 > _em0 and _ec0 > _es0
+                try:
+                    _price_curr = float(self.data.close[0])
+                    _filter_ema_val = float(self.ema_filter_price[0])
+                    _price_above = _price_curr > _filter_ema_val
+                except (IndexError, TypeError):
+                    _price_curr = _filter_ema_val = float('nan')
+                    _price_above = None
+                try:
+                    _emas_below = (_ef0 < _price_curr and _em0 < _price_curr and _es0 < _price_curr)
+                except (TypeError, ValueError):
+                    _emas_below = None
+                _angle_ok = self.p.long_min_angle <= _angle_val <= self.p.long_max_angle
+                _atr_ok = self.p.long_atr_min_threshold <= _atr_val <= self.p.long_atr_max_threshold
                 self._lifecycle_debug(
-                    f"phase1 LONG blocked filters | ema_order={self.p.long_use_ema_order_condition} "
-                    f"price_filter={self.p.long_use_price_filter_ema} ema_pos_filter={self.p.long_use_ema_below_price_filter} "
-                    f"angle_filter={self.p.long_use_angle_filter} angle={current_angle:.2f} range=[{self.p.long_min_angle:.1f},{self.p.long_max_angle:.1f}] "
-                    f"atr_filter={self.p.long_use_atr_filter} atr={current_atr:.6f} range=[{self.p.long_atr_min_threshold:.6f},{self.p.long_atr_max_threshold:.6f}]")
+                    f"phase1 LONG gate-pass → secondary filters blocked:\n"
+                    f"  ↳ [EMA ORDER] enabled={self.p.long_use_ema_order_condition} "
+                    f"confirm={_ec0:.5f} > fast={_ef0:.5f}|med={_em0:.5f}|slow={_es0:.5f} → {'✅' if _ema_order_ok else '❌'}\n"
+                    f"  ↳ [PRICE FILTER] enabled={self.p.long_use_price_filter_ema} "
+                    f"close={_price_curr:.5f} > filter_ema={_filter_ema_val:.5f} → {'✅' if _price_above else '❌'}\n"
+                    f"  ↳ [EMA POS FILTER] enabled={self.p.long_use_ema_below_price_filter} "
+                    f"all_emas<price → {'✅' if _emas_below else '❌'}\n"
+                    f"  ↳ [ANGLE FILTER] enabled={self.p.long_use_angle_filter} "
+                    f"angle={_angle_val:.2f}° [{self.p.long_min_angle:.1f},{self.p.long_max_angle:.1f}] → {'✅' if _angle_ok else '❌'}\n"
+                    f"  ↳ [ATR FILTER] enabled={self.p.long_use_atr_filter} "
+                    f"atr={_atr_val:.6f} [{self.p.long_atr_min_threshold:.6f},{self.p.long_atr_max_threshold:.6f}] → {'✅' if _atr_ok else '❌'}"
+                )
 
         # Check SHORT signals
         if self.p.enable_short_trades:
@@ -1366,18 +1437,89 @@ class ITradingStrategy(bt.Strategy):
                         f"| prev_bear={prev_bear} | atr={current_atr:.6f}")
                     return 'SHORT'
             elif self.p.live_trading:
+                # === PHASE1 SHORT GATE-FAIL DIAGNOSTIC ===
+                _ec0 = float(self.ema_confirm[0])
+                _ef0 = float(self.ema_fast[0])
+                _em0 = float(self.ema_medium[0])
+                _es0 = float(self.ema_slow[0])
+                try:
+                    _ec1 = float(self.ema_confirm[-1])
+                    _ef1 = float(self.ema_fast[-1])
+                    _em1 = float(self.ema_medium[-1])
+                    _es1 = float(self.ema_slow[-1])
+                except (IndexError, TypeError):
+                    _ec1 = _ef1 = _em1 = _es1 = float('nan')
+                try:
+                    _p_close = float(self.data.close[-1])
+                    _p_open = float(self.data.open[-1])
+                except (IndexError, TypeError):
+                    _p_close = _p_open = float('nan')
+                _candle_diff = (_p_close - _p_open) if not (math.isnan(_p_close) or math.isnan(_p_open)) else float('nan')
+                _angle_val = self._angle()
+                _atr_val = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                try:
+                    _price_curr = float(self.data.close[0])
+                    _filter_ema_val = float(self.ema_filter_price[0])
+                    _price_below = _price_curr < _filter_ema_val
+                except (IndexError, TypeError):
+                    _price_curr = _filter_ema_val = float('nan')
+                    _price_below = None
+                _angle_ok = self.p.short_min_angle <= _angle_val <= self.p.short_max_angle
+                _atr_ok = self.p.short_atr_min_threshold <= _atr_val <= self.p.short_atr_max_threshold
+                _candle_bear = (_candle_diff < 0) if not math.isnan(_candle_diff) else None
                 self._lifecycle_debug(
                     f"phase1 SHORT blocked | candle_ok={candle_direction_ok} prev_bear={prev_bear} "
-                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow})")
+                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow})\n"
+                    f"  ↳ [EMA CURR] confirm={_ec0:.5f}  fast={_ef0:.5f}  med={_em0:.5f}  slow={_es0:.5f}\n"
+                    f"  ↳ [EMA PREV] confirm={_ec1:.5f}  fast={_ef1:.5f}  med={_em1:.5f}  slow={_es1:.5f}\n"
+                    f"  ↳ [CROSS GAP] conf-fast={_ec0 - _ef0:+.5f}  conf-med={_ec0 - _em0:+.5f}  conf-slow={_ec0 - _es0:+.5f}  "
+                    f"(-ve=confirm below EMA; crossunder needs: curr<0 AND prev≥0)\n"
+                    f"  ↳ [PREV CANDLE] close={_p_close:.5f}  open={_p_open:.5f}  diff={_candle_diff:+.5f}  "
+                    f"({'BEAR ✅' if _candle_bear else 'BULL ❌'})  "
+                    f"[candle_filter={'ON → requires BEAR to gate-pass' if self.p.short_use_candle_direction_filter else 'OFF → no candle requirement'}]\n"
+                    f"  ↳ [LOOK-AHEAD] angle={_angle_val:.2f}° [{self.p.short_min_angle:.1f},{self.p.short_max_angle:.1f}] "
+                    f"{'✅' if _angle_ok else '❌'}  "
+                    f"| atr={_atr_val:.6f} [{self.p.short_atr_min_threshold:.6f},{self.p.short_atr_max_threshold:.6f}] "
+                    f"{'✅' if _atr_ok else '❌'}  "
+                    f"| price_filter={'ON' if self.p.short_use_price_filter_ema else 'OFF'} "
+                    f"close={_price_curr:.5f} vs filter_ema={_filter_ema_val:.5f} {'✅' if _price_below else '❌'}"
+                )
 
             if self.p.live_trading and candle_direction_ok and cross_any and not signal_valid:
-                current_angle = self._angle() if self.p.short_use_angle_filter else float('nan')
-                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                # === PHASE1 SHORT SECONDARY FILTER DIAGNOSTIC (gate passed, filters blocked) ===
+                _angle_val = self._angle()
+                _atr_val = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                _ec0 = float(self.ema_confirm[0])
+                _ef0 = float(self.ema_fast[0])
+                _em0 = float(self.ema_medium[0])
+                _es0 = float(self.ema_slow[0])
+                _ema_order_ok = _ec0 < _ef0 and _ec0 < _em0 and _ec0 < _es0
+                try:
+                    _price_curr = float(self.data.close[0])
+                    _filter_ema_val = float(self.ema_filter_price[0])
+                    _price_below = _price_curr < _filter_ema_val
+                except (IndexError, TypeError):
+                    _price_curr = _filter_ema_val = float('nan')
+                    _price_below = None
+                try:
+                    _emas_above = (_ef0 > _price_curr and _em0 > _price_curr and _es0 > _price_curr)
+                except (TypeError, ValueError):
+                    _emas_above = None
+                _angle_ok = self.p.short_min_angle <= _angle_val <= self.p.short_max_angle
+                _atr_ok = self.p.short_atr_min_threshold <= _atr_val <= self.p.short_atr_max_threshold
                 self._lifecycle_debug(
-                    f"phase1 SHORT blocked filters | ema_order={self.p.short_use_ema_order_condition} "
-                    f"price_filter={self.p.short_use_price_filter_ema} ema_pos_filter={self.p.short_use_ema_above_price_filter} "
-                    f"angle_filter={self.p.short_use_angle_filter} angle={current_angle:.2f} range=[{self.p.short_min_angle:.1f},{self.p.short_max_angle:.1f}] "
-                    f"atr_filter={self.p.short_use_atr_filter} atr={current_atr:.6f} range=[{self.p.short_atr_min_threshold:.6f},{self.p.short_atr_max_threshold:.6f}]")
+                    f"phase1 SHORT gate-pass → secondary filters blocked:\n"
+                    f"  ↳ [EMA ORDER] enabled={self.p.short_use_ema_order_condition} "
+                    f"confirm={_ec0:.5f} < fast={_ef0:.5f}|med={_em0:.5f}|slow={_es0:.5f} → {'✅' if _ema_order_ok else '❌'}\n"
+                    f"  ↳ [PRICE FILTER] enabled={self.p.short_use_price_filter_ema} "
+                    f"close={_price_curr:.5f} < filter_ema={_filter_ema_val:.5f} → {'✅' if _price_below else '❌'}\n"
+                    f"  ↳ [EMA POS FILTER] enabled={self.p.short_use_ema_above_price_filter} "
+                    f"all_emas>price → {'✅' if _emas_above else '❌'}\n"
+                    f"  ↳ [ANGLE FILTER] enabled={self.p.short_use_angle_filter} "
+                    f"angle={_angle_val:.2f}° [{self.p.short_min_angle:.1f},{self.p.short_max_angle:.1f}] → {'✅' if _angle_ok else '❌'}\n"
+                    f"  ↳ [ATR FILTER] enabled={self.p.short_use_atr_filter} "
+                    f"atr={_atr_val:.6f} [{self.p.short_atr_min_threshold:.6f},{self.p.short_atr_max_threshold:.6f}] → {'✅' if _atr_ok else '❌'}"
+                )
 
         return None
 
@@ -3168,34 +3310,114 @@ class ITradingStrategy(bt.Strategy):
 
 
 class ITradingStrategyAUDUSD(ITradingStrategy):
-    """AUD/USD strategy profile using the shared base strategy implementation."""
+    """AUD/USD strategy profile using the shared base strategy implementation.
+
+    Phase 1 tuning guide for AUDUSD:
+    ─────────────────────────────────
+    GATE CONDITIONS (must ALL pass to reach secondary filters):
+      long_use_candle_direction_filter  → False = no prev-candle constraint (most permissive)
+                                          True  = requires prev candle bullish (very restrictive)
+      cross_any                         → EMA confirm crosses fast/med/slow (market-driven)
+
+    SECONDARY FILTERS (evaluated only when gate passes):
+      long_use_angle_filter / long_min_angle / long_max_angle / long_angle_scale_factor
+        With scale=10.0 and range [0.0, 30.0] the filter just requires a positive EMA slope.
+        To widen: increase long_max_angle to 90.0 or set long_use_angle_filter=False.
+
+      long_use_atr_filter / long_atr_min_threshold / long_atr_max_threshold
+        Keeps entries inside a valid volatility band.
+        To widen: lower long_atr_min_threshold (e.g. 0.00010) or raise long_atr_max_threshold.
+
+      long_use_price_filter_ema
+        Requires price above the long-period trend EMA.
+        Set False to allow counter-trend entries, or widen ema_filter_price_length.
+    """
 
     params = (
+        # === INSTRUMENT ===
         ('instrument_name', 'AUDUSD'),
+        ('forex_base_currency', 'AUD'),
+        ('forex_quote_currency', 'USD'),
+        ('forex_pip_decimal_places', 5),
+
+        # === TRADING DIRECTION ===
         ('enable_long_trades', True),
         ('enable_short_trades', False),
-        ('ema_fast_length', 10),
-        ('ema_medium_length', 20),
+
+        # === TECHNICAL INDICATORS ===
+        ('ema_fast_length', 18),
+        ('ema_medium_length', 18),
         ('ema_slow_length', 24),
-        ('ema_confirm_length', 5),
-        ('ema_filter_price_length', 40),
+        ('ema_confirm_length', 1),        # 1-period EMA ≈ close price → fast crossover response
+        ('ema_filter_price_length', 40),  # Trend-alignment filter EMA
+        ('ema_exit_length', 25),
         ('atr_length', 10),
+
+        # === TIME RANGE FILTER ===
         ('use_time_range_filter', True),
         ('entry_start_hour', 23),
         ('entry_start_minute', 0),
         ('entry_end_hour', 16),
         ('entry_end_minute', 0),
+
+        # === RISK MANAGEMENT ===
         ('long_atr_sl_multiplier', 4.4),
         ('long_atr_tp_multiplier', 6.8),
         ('short_atr_sl_multiplier', 2.5),
         ('short_atr_tp_multiplier', 6.5),
-        ('long_atr_min_threshold', 0.00015),
-        ('long_atr_max_threshold', 0.0005),
+
+        # === PHASE 1 GATE — LONG ENTRY FILTERS ===
+        # KEY TUNING: candle_direction_filter=False removes the biggest gate blocker.
+        # When True every bearish prior candle blocks Phase 1 regardless of crossover.
+        ('long_use_candle_direction_filter', False),   # ← set True to require bullish prev candle
+        ('long_use_ema_order_condition', False),        # confirm > fast & med & slow
+        ('long_use_price_filter_ema', True),            # close > 40-period trend EMA
+        ('long_use_ema_below_price_filter', False),     # all EMAs below close
+        # Angle filter – with scale=10.0 the effective range is ~0–0.2°; [0,30] = positive slope only
+        ('long_use_angle_filter', True),
+        ('long_min_angle', 0.0),
+        ('long_max_angle', 30.0),
+        ('long_angle_scale_factor', 10.0),
+
+        # === PHASE 1 GATE — SHORT ENTRY FILTERS ===
+        ('short_use_candle_direction_filter', False),  # ← set True to require bearish prev candle
+        ('short_use_ema_order_condition', False),
+        ('short_use_price_filter_ema', True),
+        ('short_use_ema_above_price_filter', False),
+        ('short_use_angle_filter', True),
+        ('short_min_angle', -90.0),
+        ('short_max_angle', -20.0),
+        ('short_angle_scale_factor', 10.0),
+
+        # === LONG ATR VOLATILITY FILTER ===
+        ('long_use_atr_filter', True),
+        ('long_atr_min_threshold', 0.00015),   # ↓ lower to accept lower-volatility entries
+        ('long_atr_max_threshold', 0.00060),   # ↑ raised from 0.0005 for wider acceptance
+        ('long_use_atr_increment_filter', False),
+        ('long_atr_increment_min_threshold', 0.000001),
+        ('long_atr_increment_max_threshold', 0.0111),
+        ('long_use_atr_decrement_filter', False),
+        ('long_atr_decrement_min_threshold', -0.004),
+        ('long_atr_decrement_max_threshold', 0),
+
+        # === SHORT ATR VOLATILITY FILTER ===
+        ('short_use_atr_filter', True),
         ('short_atr_min_threshold', 0.000400),
         ('short_atr_max_threshold', 0.000750),
-        ('forex_base_currency', 'AUD'),
-        ('forex_quote_currency', 'USD'),
-        ('forex_pip_decimal_places', 5),
+        ('short_use_atr_increment_filter', True),
+        ('short_atr_increment_min_threshold', 0.000001),
+        ('short_atr_increment_max_threshold', 0.001000),
+        ('short_use_atr_decrement_filter', True),
+        ('short_atr_decrement_min_threshold', -0.000080),
+        ('short_atr_decrement_max_threshold', -0.000020),
+
+        # === VOLATILITY EXPANSION CHANNEL / PULLBACK ENTRY ===
+        ('long_use_pullback_entry', True),
+        ('long_pullback_max_candles', 2),
+        ('long_entry_window_periods', 1),
+        ('use_window_time_offset', False),
+        ('window_offset_multiplier', 0.5),
+        ('window_price_offset_multiplier', 0.001),
     )
 
 
