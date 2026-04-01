@@ -28,12 +28,16 @@ STRATEGY_CLASS_BY_INSTRUMENT = {
     'EURUSD': 'ITradingStrategyEURUSD',
     'GBPUSD': 'ITradingStrategyGBPUSD',
     'EURJPY': 'ITradingStrategyEURJPY',
+    'USDCHF': 'ITradingStrategyUSDCHF',
+    'USDJPY': 'ITradingStrategyUSDJPY',
 }
 PRICE_PRECISION_BY_INSTRUMENT = {
     'AUDUSD': 5,
     'EURUSD': 5,
     'GBPUSD': 5,
     'EURJPY': 3,
+    'USDCHF': 5,
+    'USDJPY': 3,
 }
 STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT = {
     'AUDUSD': {
@@ -71,6 +75,25 @@ STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT = {
         'contract_size': 100000,
         'forex_spread_pips': 2.0,
         'forex_margin_required': 3.33,
+        'forex_jpy_rate': 152.0,
+    },
+    'USDCHF': {
+        'forex_base_currency': 'USD',
+        'forex_quote_currency': 'CHF',
+        'forex_pip_value': 0.0001,
+        'forex_pip_decimal_places': 4,
+        'contract_size': 100000,
+        'forex_spread_pips': 2.2,
+        'forex_margin_required': 3.33,
+    },
+    'USDJPY': {
+        'forex_base_currency': 'USD',
+        'forex_quote_currency': 'JPY',
+        'forex_pip_value': 0.01,
+        'forex_pip_decimal_places': 3,
+        'contract_size': 100000,
+        'forex_spread_pips': 1.0,
+        'forex_margin_required': 2.0,
         'forex_jpy_rate': 152.0,
     },
 }

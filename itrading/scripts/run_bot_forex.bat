@@ -47,9 +47,13 @@ if /I "%INSTRUMENT%"=="AUDUSD" (
     set ITRADING_PARAMS_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\config\parameters_live_gbpusd.json
 ) else if /I "%INSTRUMENT%"=="EURJPY" (
     set ITRADING_PARAMS_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\config\parameters_live_eurjpy.json
+) else if /I "%INSTRUMENT%"=="USDCHF" (
+    set ITRADING_PARAMS_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\config\parameters_live_usdchf.json
+) else if /I "%INSTRUMENT%"=="USDJPY" (
+    set ITRADING_PARAMS_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\config\parameters_live_usdjpy.json
 ) else (
     echo [ERROR] Unsupported instrument: %INSTRUMENT%
-    echo Supported instruments: AUDUSD, EURUSD, GBPUSD, EURJPY
+    echo Supported instruments: AUDUSD, EURUSD, GBPUSD, EURJPY, USDCHF, USDJPY
     pause
     exit /b 1
 )
