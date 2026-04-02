@@ -114,6 +114,48 @@ active_strategy_label = f"{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME
 active_forex_instrument = os.getenv('ITRADING_FOREX_INSTRUMENT', '').strip().upper() or None
 
 
+class StrategyIBConnectionAdapter:
+    """Expose the minimal `connected` / `get_positions()` API expected by the strategy."""
+
+    def __init__(self, ib_client: IB):
+        self._ib = ib_client
+
+    @property
+    def connected(self) -> bool:
+        try:
+            return bool(self._ib is not None and self._ib.isConnected())
+        except Exception:
+            return False
+
+    def get_positions(self) -> list[dict]:
+        if not self.connected:
+            return []
+
+        try:
+            raw_positions = self._ib.positions()
+        except Exception:
+            return []
+
+        normalized_positions: list[dict] = []
+        for pos in raw_positions or []:
+            contract = getattr(pos, 'contract', None)
+            normalized_positions.append({
+                'symbol': str(getattr(contract, 'symbol', '') or '').upper(),
+                'secType': str(getattr(contract, 'secType', '') or '').upper(),
+                'position': _safe_float(getattr(pos, 'position', 0.0), 0.0),
+                'avgCost': _safe_float(getattr(pos, 'avgCost', 0.0), 0.0),
+                'currency': str(getattr(contract, 'currency', '') or 'USD').upper(),
+            })
+        return normalized_positions
+
+
+def _strategy_ib_connection() -> StrategyIBConnectionAdapter | None:
+    try:
+        return StrategyIBConnectionAdapter(ib) if ib is not None and ib.isConnected() else None
+    except Exception:
+        return None
+
+
 def _set_logging_instrument(instrument: str | None):
     global active_forex_instrument
     normalized = str(instrument or '').strip().upper() or None
@@ -234,7 +276,7 @@ def _strategy_params_without_runtime_overrides(params: dict) -> dict:
     STRATEGY_PARAMS (otherwise Cerebro.addstrategy gets duplicate kwargs).
     """
     strategy_params = dict((params or {}).get('STRATEGY_PARAMS') or {})
-    for key in ('live_trading', 'signal_queue', 'live_cutoff_dt', 'live_state_in'):
+    for key in ('live_trading', 'signal_queue', 'live_cutoff_dt', 'live_state_in', 'ib_connection'):
         strategy_params.pop(key, None)
     return strategy_params
 
@@ -613,6 +655,7 @@ async def run_strategy_on_live_bar(live_bars):
         signal_queue=signal_queue,
         live_cutoff_dt=last_live_processed_dt,
         live_state_in=live_strategy_state,
+        ib_connection=_strategy_ib_connection(),
         **strategy_params
     )
 
@@ -698,6 +741,7 @@ async def run_historical_analysis(params):
     cerebro.addstrategy(
         active_strategy_class,
         live_trading=False,
+        ib_connection=_strategy_ib_connection(),
         **strategy_params
     )
     

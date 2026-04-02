@@ -76,7 +76,13 @@ def make_dummy(*, confirm0, confirm1, fast0, fast1, med0, med1, slow0, slow1,
     d.ema_filter_price = Line(filter0, filter0)
     d.atr = Line(atr0, atr0)
     d.signal_detection_atr = None
+    d.entry_signal_count = 0
+    d.blocked_entry_count = 0
+    d.successful_entry_count = 0
     d._lifecycle_debug = lambda msg: None
+    d._mark_entry_signal_evaluated = types.MethodType(ITradingStrategy._mark_entry_signal_evaluated, d)
+    d._mark_entry_blocked = types.MethodType(ITradingStrategy._mark_entry_blocked, d)
+    d._mark_entry_successful = types.MethodType(ITradingStrategy._mark_entry_successful, d)
     d._cross_above = types.MethodType(ITradingStrategy._cross_above, d)
     d._cross_below = types.MethodType(ITradingStrategy._cross_below, d)
     d._phase1_scan_for_signal = types.MethodType(ITradingStrategy._phase1_scan_for_signal, d)

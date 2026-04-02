@@ -308,6 +308,7 @@ class ITradingStrategy(bt.Strategy):
         export_trade_reports=True,
         lifecycle_logging=False,  # Compact lifecycle logger (init/prenext/next1/notify_order/notify_trade/stop)
         dataname=None,
+        ib_connection=None,  # Interactive Brokers connection for live position monitoring
     )
 
     def _record_trade_entry(self, signal_direction, dt, entry_price, position_size, current_atr):
@@ -1024,6 +1025,15 @@ class ITradingStrategy(bt.Strategy):
         instrument = str(getattr(self.p, 'instrument_name', '') or 'UNKNOWN').strip().upper() or 'UNKNOWN'
         return f"[{instrument}]"
 
+    def _mark_entry_signal_evaluated(self):
+        self.entry_signal_count += 1
+
+    def _mark_entry_blocked(self):
+        self.blocked_entry_count += 1
+
+    def _mark_entry_successful(self):
+        self.successful_entry_count += 1
+
     def _tagged_print(self, tag, message):
         print(f"{self._instrument_log_prefix()}[{tag}] {message}")
 
@@ -1217,6 +1227,22 @@ class ITradingStrategy(bt.Strategy):
         # 🔧 CRITICAL FIX: Reset stored trigger candle
         self.signal_trigger_candle = None
 
+    def _reset_pullback_state(self):
+        """Reset legacy pullback state while preserving timing trackers needed for trade reporting."""
+        self.pullback_state = "NORMAL"
+        self.pullback_red_count = 0
+        self.first_red_high = None
+        self.pullback_green_count = 0
+        self.first_green_low = None
+        self.breakout_target = None
+        self.pullback_start_atr = None
+
+    def _reset_signal_tracking(self):
+        """Reset signal timing trackers after trade recording has consumed them."""
+        self.entry_window_start = None
+        self.signal_detection_bar = None
+        self.signal_detection_atr = None
+
     def _phase1_scan_for_signal(self):
         """PHASE 1: Scan for initial EMA crossover signals
 
@@ -1296,6 +1322,7 @@ class ITradingStrategy(bt.Strategy):
                     # ✅ CRITICAL FIX: Store ATR when LONG signal is detected
                     current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                     self.signal_detection_atr = current_atr
+                    self._mark_entry_signal_evaluated()
                     self._lifecycle_debug(
                         f"phase1 LONG pass | cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow}) "
                         f"| continuation_ready={continuation_ready} trigger_mode={trigger_mode} "
@@ -1376,7 +1403,7 @@ class ITradingStrategy(bt.Strategy):
                 self._lifecycle_debug(
                     f"phase1 LONG gate-pass ({trigger_mode}) → secondary filters blocked:\n"
                     f"  ↳ [EMA ORDER] enabled={self.p.long_use_ema_order_condition} "
-                    f"confirm={_ec0:.5f} > fast={_ef0:.5f}|med={_em0:.5f}|slow={_es0:.5f} → {'✅' if _ema_order_ok else '❌'}\n"
+                    f"confirm={_ec0:.5f}  fast={_ef0:.5f}|med={_em0:.5f}|slow={_es0:.5f} → {'✅' if _ema_order_ok else '❌'}\n"
                     f"  ↳ [PRICE FILTER] enabled={self.p.long_use_price_filter_ema} "
                     f"close={_price_curr:.5f} > filter_ema={_filter_ema_val:.5f} → {'✅' if _price_above else '❌'}\n"
                     f"  ↳ [EMA POS FILTER] enabled={self.p.long_use_ema_below_price_filter} "
@@ -1460,6 +1487,7 @@ class ITradingStrategy(bt.Strategy):
                     # ✅ CRITICAL FIX: Store ATR when SHORT signal is detected
                     current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                     self.signal_detection_atr = current_atr
+                    self._mark_entry_signal_evaluated()
                     self._lifecycle_debug(
                         f"phase1 SHORT pass | cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow}) "
                         f"| continuation_ready={continuation_ready} trigger_mode={trigger_mode} "
@@ -1977,6 +2005,7 @@ class ITradingStrategy(bt.Strategy):
                     if self.p.print_signals:
                         print(
                             f"❌ ENTRY BLOCKED: Breakout detected but outside trading hours - {dt.hour:02d}:{dt.minute:02d} outside {self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d} UTC")
+                    self._mark_entry_blocked()
                     self._reset_entry_state()
                     self._lifecycle_debug(
                         f"entry blocked time-filter | dt={dt:%H:%M} window=[{self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d}]")
@@ -2044,6 +2073,7 @@ class ITradingStrategy(bt.Strategy):
                             trigger_open = trigger_candle['open']
                             print(
                                 f"❌ LONG ENTRY BLOCKED: Previous candle is not bullish (close[-1]={trigger_close:.5f} open[-1]={trigger_open:.5f} body={candle_body:.5f})")
+                        self._mark_entry_blocked()
                         self._reset_entry_state()
                         self._lifecycle_debug("entry blocked candle-filter | direction=LONG")
                         return
@@ -2058,6 +2088,7 @@ class ITradingStrategy(bt.Strategy):
                                 f"❌ SHORT ENTRY BLOCKED: Previous candle is not bearish (close[-1]={trigger_close:.5f} open[-1]={trigger_open:.5f} body={candle_body:.5f})")
                             print(
                                 f"   🚨 ERROR: SHORT entry attempted after BULLISH candle! This violates strategy rules!")
+                        self._mark_entry_blocked()
                         self._reset_entry_state()
                         self._lifecycle_debug("entry blocked candle-filter | direction=SHORT")
                         return
@@ -2067,6 +2098,7 @@ class ITradingStrategy(bt.Strategy):
                     if not self._validate_all_entry_filters():
                         if self.p.print_signals:
                             print(f"❌ ENTRY BLOCKED: LONG entry validation failed (angle/ATR filters)")
+                        self._mark_entry_blocked()
                         self._reset_entry_state()
                         self._lifecycle_debug("entry blocked post-breakout filters | direction=LONG")
                         return
@@ -2074,6 +2106,7 @@ class ITradingStrategy(bt.Strategy):
                     if not self._validate_all_short_entry_filters():
                         if self.p.print_signals:
                             print(f"❌ ENTRY BLOCKED: SHORT entry validation failed (angle/ATR filters)")
+                        self._mark_entry_blocked()
                         self._reset_entry_state()
                         self._lifecycle_debug("entry blocked post-breakout filters | direction=SHORT")
                         return
@@ -2088,6 +2121,7 @@ class ITradingStrategy(bt.Strategy):
                     if self.p.print_signals:
                         print(
                             f"❌ ENTRY BLOCKED: {signal_direction} entry rejected - {dt.hour:02d}:{dt.minute:02d} outside {self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d} UTC")
+                    self._mark_entry_blocked()
                     self._reset_entry_state()
                     self._lifecycle_debug(
                         f"entry blocked final-time-filter | direction={signal_direction} dt={dt:%H:%M}")
@@ -2096,6 +2130,7 @@ class ITradingStrategy(bt.Strategy):
                 # Calculate position size and create order
                 atr_now = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
                 if atr_now <= 0:
+                    self._mark_entry_blocked()
                     self._reset_entry_state()
                     self._lifecycle_debug(f"entry blocked atr<=0 | atr={atr_now:.6f}")
                     return
@@ -2120,6 +2155,7 @@ class ITradingStrategy(bt.Strategy):
                     optimal_lots, units, _, _, _ = self._calculate_forex_position_size(entry_price, self.stop_level)
                     
                     if units is None or units <= 0:
+                        self._mark_entry_blocked()
                         self._reset_entry_state()
                         self._lifecycle_debug(f"entry blocked sizing | units={units}")
                         return
@@ -2129,6 +2165,7 @@ class ITradingStrategy(bt.Strategy):
                     bt_size = int(self.p.size * self.p.contract_size)
 
                 if bt_size <= 0:
+                    self._mark_entry_blocked()
                     self._reset_entry_state()
                     self._lifecycle_debug(f"entry blocked bt_size<=0 | bt_size={bt_size}")
                     return
@@ -2155,6 +2192,7 @@ class ITradingStrategy(bt.Strategy):
                             'signal_bar_time': dt.isoformat()
                         }
                         self.p.signal_queue.put(signal)
+                        self._mark_entry_successful()
                         print(f"📬 SIGNAL EMITTED: {signal_direction} size={bt_size} SL={self.stop_level:.5f} TP={self.take_level:.5f}")
                         self._lifecycle_debug(
                             f"signal emitted | direction={signal_direction} size={bt_size} sl={self.stop_level:.5f} tp={self.take_level:.5f}")
@@ -2166,6 +2204,7 @@ class ITradingStrategy(bt.Strategy):
                     elif signal_direction == 'SHORT':
                         self.order = self.sell(size=bt_size)
                         signal_type_display = " SHORT SELL"
+                    self._mark_entry_successful()
 
                     # Print entry confirmation for backtesting
                     if self.p.print_signals:
@@ -3018,240 +3057,992 @@ class ITradingStrategy(bt.Strategy):
 
         return True
 
-    def _reset_pullback_state(self):
-        """Reset pullback state machine to initial state but preserve tracking variables"""
-        self.pullback_state = "NORMAL"
-        # Reset LONG pullback variables
-        self.pullback_red_count = 0
-        self.first_red_high = None
-        # Reset SHORT pullback variables
-        self.pullback_green_count = 0
-        self.first_green_low = None
-        # Reset common variables (but preserve tracking variables for trade recording)
-        self.breakout_target = None
-        # Reset ATR tracking variables
-        self.pullback_start_atr = None
-        # NOTE: Do NOT reset entry_window_start, signal_detection_bar, signal_detection_atr
-        # These are needed for accurate "Bars to Entry" calculation in trade reports
+    def _handle_pullback_entry(self, dt, direction='LONG'):
+        """Pullback entry state machine logic
 
-    def _reset_signal_tracking(self):
-        """Reset signal tracking variables after trade recording is complete"""
-        self.entry_window_start = None
-        self.signal_detection_bar = None
-        self.signal_detection_atr = None
+        Args:
+            dt: Current datetime
+            direction: 'LONG' or 'SHORT' signal direction
 
-    def notify_order(self, order):
-        """Enhanced order notification with robust OCA group for SL/TP supporting both LONG and SHORT positions."""
-        dt = bt.num2date(self.data.datetime[0])
+        Returns:
+            Boolean indicating if entry should be executed
+        """
+        if direction == 'SHORT':
+            return self._handle_short_pullback_entry(dt)
+        else:
+            return self._handle_long_pullback_entry(dt)
 
-        if self.p.lifecycle_logging:
-            _exec_price = order.executed.price if order.status == order.Completed else 0.0
-            self._tagged_print('LIFECYCLE', f"notify_order | ref={order.ref} | status={order.getstatusname()} | action={'BUY' if order.isbuy() else 'SELL'} | exec_price={_exec_price:.5f} | dt={dt:%Y-%m-%d %H:%M}")
+    def _handle_long_pullback_entry(self, dt):
+        """LONG pullback entry state machine logic - 3-phase precise implementation"""
+        # Check time range filter first
+        if not self._is_in_trading_time_range(dt):
+            if self.p.verbose_debug:
+                print(
+                    f"Time Filter: LONG entry rejected - {dt.hour:02d}:{dt.minute:02d} outside {self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d} UTC")
+            return False
 
-        if order.status in [order.Submitted, order.Accepted]:
-            return
+        current_bar = len(self)
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        current_high = float(self.data.high[0])
 
-        if order.status == order.Completed:
-            # Determine if this is an entry or exit order
-            if order == self.order:  # This is our scripts entry order
-                # Entry order completed
-                self.last_entry_price = order.executed.price
-                self.last_entry_bar = len(self)
+        # Check if current candle is red (bearish)
+        is_red_candle = current_close < current_open
 
-                if order.isbuy():
-                    # LONG position entry (BUY order)
-                    entry_type = " LONG BUY"
-                    if self.p.print_signals:
-                        print(f"✅ {entry_type} EXECUTED at {order.executed.price:.5f} size={order.executed.size}")
+        # PHASE 1: SIGNAL DETECTION
+        if self.pullback_state == "NORMAL":
+            # Check for initial entry conditions (EMA crossover + previous bullish candle + filters)
+            if self._basic_entry_conditions():
+                # Store ATR value and bar number when signal is detected
+                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                self.signal_detection_atr = current_atr
+                self.signal_detection_bar = len(self)  # Track bar number when signal was detected
 
-                    # Place SHORT protective orders (SELL SL/TP for LONG position)
-                    if self.stop_level and self.take_level:
-                        self.stop_order = self.sell(
-                            size=order.executed.size,
-                            exectype=bt.Order.Stop,
-                            price=self.stop_level,
-                            oco=self.limit_order  # Link to TP order
-                        )
-                        self.limit_order = self.sell(
-                            size=order.executed.size,
-                            exectype=bt.Order.Limit,
-                            price=self.take_level,
-                            oco=self.stop_order  # Link to SL order
-                        )
-                        if self.p.print_signals:
-                            print(f"🛡️  LONG PROTECTIVE OCA ORDERS: SL={self.stop_level:.5f} TP={self.take_level:.5f}")
+                # Check ATR range threshold if filter is enabled
+                if self.p.long_use_atr_filter:
+                    if current_atr < self.p.long_atr_min_threshold:
+                        if self.p.verbose_debug:
+                            print(
+                                f"ATR Filter: Signal rejected - ATR {current_atr:.6f} < min threshold {self.p.long_atr_min_threshold:.6f}")
+                        return False
+                    if current_atr > self.p.long_atr_max_threshold:
+                        if self.p.verbose_debug:
+                            print(
+                                f"ATR Filter: Signal rejected - ATR {current_atr:.6f} > max threshold {self.p.long_atr_max_threshold:.6f}")
+                        return False
 
-                else:  # order.issell()
-                    # SHORT position entry (SELL order)
-                    entry_type = " SHORT SELL"
-                    if self.p.print_signals:
-                        print(f"✅ {entry_type} EXECUTED at {order.executed.price:.5f} size={order.executed.size}")
+                # Transition to Phase 2: Wait for pullback
+                self.pullback_state = "WAITING_PULLBACK"
+                self.pullback_red_count = 0
+                self.first_red_high = None
+                self.breakout_target = None  # Will be set by first pullback candle
+                return False  # Don't enter yet, wait for pullback
+            return False
 
-                    # Place LONG protective orders (BUY SL/TP for SHORT position)
-                    if self.stop_level and self.take_level:
-                        self.stop_order = self.buy(
-                            size=order.executed.size,
-                            exectype=bt.Order.Stop,
-                            price=self.stop_level,  # Stop above entry for SHORT
-                            oco=self.limit_order  # Link to TP order
-                        )
-                        self.limit_order = self.buy(
-                            size=order.executed.size,
-                            exectype=bt.Order.Limit,
-                            price=self.take_level,  # Take below entry for SHORT
-                            oco=self.stop_order  # Link to SL order
-                        )
-                        if self.p.print_signals:
-                            print(f"🛡️  SHORT PROTECTIVE OCA ORDERS: SL={self.stop_level:.5f} TP={self.take_level:.5f}")
+        # PHASE 2: PULLBACK WAIT & SETTING THE BREAKOUT LEVEL
+        elif self.pullback_state == "WAITING_PULLBACK":
+            if is_red_candle:
+                self.pullback_red_count += 1
 
-                self.order = None
+                # CRITICAL: Set breakout level ONLY from the FIRST red candle
+                if self.pullback_red_count == 1:
+                    self.first_red_high = current_high
+                    # Set breakout target immediately when first pullback candle appears
+                    self.breakout_target = self.first_red_high
 
-            else:
-                # Exit order completed (SL/TP or manual close)
-                exit_price = order.executed.price
+                # Check if we exceeded max red candles
+                if self.pullback_red_count > self.p.long_pullback_max_candles:
+                    self._reset_pullback_state()
+                    return False
 
-                # Determine exit reason
-                exit_reason = "UNKNOWN"
-                if order.exectype == bt.Order.Stop:
-                    exit_reason = "STOP_LOSS"
-                elif order.exectype == bt.Order.Limit:
-                    exit_reason = "TAKE_PROFIT"
+            else:  # Green candle - pullback sequence ended
+                if self.pullback_red_count >= self.p.long_pullback_max_candles:
+                    # Pullback sequence complete (required number of red candles occurred)
+                    # Store ATR value when pullback phase ends
+                    current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                    self.pullback_start_atr = current_atr
+
+                    # Check ATR increment/decrement condition if filter is enabled
+                    if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
+                        atr_change = current_atr - self.signal_detection_atr
+
+                        # ATR CHANGE FILTERING LOGIC
+                        # Rule 1: If ATR is incrementing (positive change: low → high volatility)
+                        if atr_change > 0:
+                            if self.p.long_use_atr_increment_filter:
+                                # Increment filter is ENABLED - check if within allowed range
+                                if not (
+                                    self.p.long_atr_increment_min_threshold <= atr_change <= self.p.long_atr_increment_max_threshold):
+                                    if self.p.verbose_debug:
+                                        print(
+                                            f"ATR INCREMENT Filter: LONG pullback rejected - ATR increment {atr_change:+.6f} outside range [{self.p.long_atr_increment_min_threshold:.6f}, {self.p.long_atr_increment_max_threshold:.6f}]")
+                                    self._reset_pullback_state()
+                                    return False
+                        # Rule 2: If ATR is decrementing (negative change: high → low volatility)
+                        elif atr_change < 0:
+                            if self.p.long_use_atr_decrement_filter:
+                                # Decrement filter is ENABLED - check if atr_change is within optimal negative range
+                                if not (
+                                    self.p.long_atr_decrement_min_threshold <= atr_change <= self.p.long_atr_decrement_max_threshold):
+                                    if self.p.verbose_debug:
+                                        print(
+                                            f"ATR DECREMENT Filter: LONG pullback rejected - ATR change {atr_change:+.6f} outside range [{self.p.long_atr_decrement_min_threshold:.6f}, {self.p.long_atr_decrement_max_threshold:.6f}]")
+                                    self._reset_pullback_state()
+                                    return False
+                        # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
+
+                    # Transition to Phase 3: Start entry window countdown
+                    self.pullback_state = "WAITING_BREAKOUT"
+                    self.entry_window_start = current_bar
                 else:
-                    exit_reason = "MANUAL_CLOSE"
+                    # No pullback occurred (no red candles), reset
+                    self._reset_pullback_state()
+            return False
 
-                self.last_exit_reason = exit_reason
+        # PHASE 3: BREAKOUT CONFIRMATION AND ENTRY
+        elif self.pullback_state == "WAITING_BREAKOUT":
+            # Check if entry window expired
+            bars_in_window = current_bar - self.entry_window_start
+            # SAFETY CHECK: If bars_in_window is unreasonably high, reset state
+            if bars_in_window > 50:  # Safety limit - should never exceed this
+                self._reset_pullback_state()
+                return False
+            if bars_in_window >= self.p.long_entry_window_periods:
+                self._reset_pullback_state()
+                return False
 
-                # Determine position direction that was closed
-                position_type = " LONG" if order.issell() else " SHORT"
+            # Entry Trigger Condition: current high >= breakout_target (already includes pip offset)
+            if current_high >= self.breakout_target:
+                # 🔧 CRITICAL FIX: Validate ALL filters BEFORE any entry processing
+                if not self._validate_all_entry_filters():
+                    if self.p.verbose_debug:
+                        print(f"❌ ENTRY BLOCKED: LONG entry validation failed at breakout")
+                    return False
+
+                # Breakout detected! All entry conditions passed
+                # Calculate ATR increment for validation and recording
+                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+
+                # Always calculate ATR change for reporting purposes
+                if self.signal_detection_atr is not None:
+                    atr_change = current_atr - self.signal_detection_atr
+                    # Store values for trade recording (always, regardless of filter status)
+                    self.entry_atr_increment = atr_change
+                    self.entry_signal_detection_atr = self.signal_detection_atr
+                else:
+                    self.entry_atr_increment = None
+                    self.entry_signal_detection_atr = None
+
+                # Check ATR increment/decrement threshold if ATR filter is enabled
+                if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
+                    atr_change = current_atr - self.signal_detection_atr
+
+                    # ATR CHANGE FILTERING LOGIC (ROBUST)
+                    # Rule 1: If ATR is incrementing (positive change: low → high volatility)
+                    if atr_change > 0:
+                        if self.p.long_use_atr_increment_filter:
+                            # Increment filter is ENABLED - check if within allowed range
+                            if not (
+                                self.p.long_atr_increment_min_threshold <= atr_change <= self.p.long_atr_increment_max_threshold):
+                                if self.p.print_signals:
+                                    print(
+                                        f"ATR INCREMENT Filter: LONG entry rejected - ATR increment {atr_change:+.6f} outside range [{self.p.long_atr_increment_min_threshold:.6f}, {self.p.long_atr_increment_max_threshold:.6f}]")
+                                return False
+                    # Rule 2: If ATR is decrementing (negative change: high → low volatility)
+                    elif atr_change < 0:
+                        if self.p.long_use_atr_decrement_filter:
+                            # Decrement filter is ENABLED - check if atr_change is within optimal negative range
+                            if not (
+                                self.p.long_atr_decrement_min_threshold <= atr_change <= self.p.long_atr_decrement_max_threshold):
+                                if self.p.print_signals:
+                                    print(
+                                        f"ATR DECREMENT Filter: LONG entry rejected - ATR change {atr_change:+.6f} outside range [{self.p.long_atr_decrement_min_threshold:.6f}, {self.p.long_atr_decrement_max_threshold:.6f}]")
+                                return False
+                    # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
 
                 if self.p.print_signals:
+                    atr_info = ""
+                    if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
+                        atr_change = self.entry_atr_increment if self.entry_atr_increment is not None else current_atr - self.signal_detection_atr
+                        atr_info = f" | ATR: {current_atr:.6f} (signal: {self.signal_detection_atr:.6f}, inc: {atr_change:+.6f})"
                     print(
-                        f"🔚 {position_type} EXIT EXECUTED at {exit_price:.5f} size={order.executed.size} reason={exit_reason}")
+                        f"LONG BREAKOUT ENTRY! High={current_high:.5f} >= target={self.breakout_target:.5f}{atr_info}")
 
-                # Reset all state variables to ensure a clean slate for the next trade
-                self.stop_order = None
-                self.limit_order = None
-                self.order = None
-                self.stop_level = None
-                self.take_level = None
-                self.initial_stop_level = None
+                # ✅ CRITICAL FIX: Store ATR values BEFORE reset to preserve them for trade recording
+                temp_signal_detection_atr = self.signal_detection_atr
+                temp_entry_atr_increment = self.entry_atr_increment
+                print(
+                    f"🔍 DEBUG SHORT: Before reset - signal_detection_atr={temp_signal_detection_atr}, entry_atr_increment={temp_entry_atr_increment}")  # DEBUG
 
-        elif order.status in [order.Canceled, order.Margin, order.Rejected]:
-            # With OCA, one of the two protective orders will always be canceled
-            # when the other one executes. This is normal and expected.
-            # We only need to log if it's unexpected.
-            is_expected_cancel = (self.stop_order and self.limit_order)
-            if not is_expected_cancel and self.p.print_signals:
-                print(f"Order {order.getstatusname()}: {order.ref}")
+                # Reset state machine and trigger entry
+                self._reset_pullback_state()
 
-            # Clean up references
-            if self.order and order.ref == self.order.ref: self.order = None
-            if self.stop_order and order.ref == self.stop_order.ref: self.stop_order = None
-            if self.limit_order and order.ref == self.limit_order.ref: self.limit_order = None
+                # ✅ CRITICAL FIX: Restore ATR values AFTER reset for trade recording
+                self.entry_signal_detection_atr = temp_signal_detection_atr
+                self.entry_atr_increment = temp_entry_atr_increment
+                print(
+                    f"🔍 DEBUG SHORT: After restore - entry_signal_detection_atr={self.entry_signal_detection_atr}, entry_atr_increment={self.entry_atr_increment}")  # DEBUG
 
-    def notify_trade(self, trade):
-        """Use Backtrader's proper trade notification for accurate PnL tracking"""
+                return True
+            return False
 
-        if self.p.lifecycle_logging:
-            self._tagged_print('LIFECYCLE', f"notify_trade | ref={trade.ref} | closed={trade.isclosed} | pnl={trade.pnlcomm:.2f} | size={trade.size} | price={trade.price:.5f}")
+        return False
 
-        if not trade.isclosed:
+    def _handle_short_pullback_entry(self, dt):
+        """SHORT pullback entry state machine logic - 3-phase precise implementation"""
+        # Check time range filter first
+        if not self._is_in_trading_time_range(dt):
+            if self.p.verbose_debug:
+                print(
+                    f"Time Filter: SHORT entry rejected - {dt.hour:02d}:{dt.minute:02d} outside {self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d} UTC")
+            return False
+
+        current_bar = len(self)
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        current_low = float(self.data.low[0])
+
+        # Check if current candle is green (bullish) - opposite for SHORT
+        is_green_candle = current_close > current_open
+
+        # PHASE 1: SIGNAL DETECTION
+        if self.pullback_state == "NORMAL":
+            # Check for initial SHORT entry conditions (EMA crossunder + previous bearish candle + filters)
+            if self._basic_short_entry_conditions():
+                # Store ATR value and bar number when signal is detected
+                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                self.signal_detection_atr = current_atr
+                self.signal_detection_bar = len(self)  # Track bar number when signal was detected
+
+                # Check ATR range threshold if filter is enabled
+                if self.p.short_use_atr_filter:
+                    if current_atr < self.p.short_atr_min_threshold:
+                        if self.p.verbose_debug:
+                            print(
+                                f"SHORT ATR Filter: Signal rejected - ATR {current_atr:.6f} < min threshold {self.p.short_atr_min_threshold:.6f}")
+                        return False
+                    if current_atr > self.p.short_atr_max_threshold:
+                        if self.p.verbose_debug:
+                            print(
+                                f"SHORT ATR Filter: Signal rejected - ATR {current_atr:.6f} > max threshold {self.p.short_atr_max_threshold:.6f}")
+                        return False
+
+                # Transition to Phase 2: Wait for pullback
+                self.pullback_state = "WAITING_PULLBACK"
+                self.pullback_green_count = 0  # Count GREEN candles for SHORT
+                self.first_green_low = None  # Store LOW of first green candle
+                self.breakout_target = None  # Will be set by first pullback candle
+                return False  # Don't enter yet, wait for pullback
+            return False
+
+        # PHASE 2: PULLBACK WAIT & SETTING THE BREAKOUT LEVEL
+        elif self.pullback_state == "WAITING_PULLBACK":
+            if is_green_candle:  # GREEN candles for SHORT pullback
+                self.pullback_green_count += 1
+
+                # CRITICAL: Set breakout level ONLY from the FIRST green candle
+                if self.pullback_green_count == 1:
+                    self.first_green_low = current_low
+                    # Set breakout target immediately when first pullback candle appears
+                    self.breakout_target = self.first_green_low
+
+                # Check if we exceeded max green candles
+                if self.pullback_green_count > self.p.short_pullback_max_candles:
+                    self._reset_pullback_state()
+                    return False
+
+            else:  # Red candle - pullback sequence ended
+                if self.pullback_green_count >= self.p.short_pullback_max_candles:
+                    # Pullback sequence complete (required number of green candles occurred)
+                    # Store ATR value when pullback phase ends
+                    current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                    self.pullback_start_atr = current_atr
+
+                    # Check ATR increment/decrement condition if filter is enabled
+                    if self.p.short_use_atr_filter and self.signal_detection_atr is not None:
+                        atr_change = current_atr - self.signal_detection_atr
+
+                        # ATR CHANGE FILTERING LOGIC
+                        # Rule 1: If ATR is incrementing (positive change: low → high volatility)
+                        if atr_change > 0:
+                            if self.p.short_use_atr_increment_filter:
+                                # Increment filter is ENABLED - check if within allowed range
+                                if not (
+                                    self.p.short_atr_increment_min_threshold <= atr_change <= self.p.short_atr_increment_max_threshold):
+                                    if self.p.verbose_debug:
+                                        print(
+                                            f"ATR INCREMENT Filter: SHORT pullback rejected - ATR increment {atr_change:+.6f} outside range [{self.p.short_atr_increment_min_threshold:.6f}, {self.p.short_atr_increment_max_threshold:.6f}]")
+                                    self._reset_pullback_state()
+                                    return False
+                        # Rule 2: If ATR is decrementing (negative change: high → low volatility)
+                        elif atr_change < 0:
+                            if self.p.short_use_atr_decrement_filter:
+                                # Decrement filter is ENABLED - check if atr_change is within optimal negative range
+                                if not (
+                                    self.p.short_atr_decrement_min_threshold <= atr_change <= self.p.short_atr_decrement_max_threshold):
+                                    if self.p.verbose_debug:
+                                        print(
+                                            f"ATR DECREMENT Filter: SHORT pullback rejected - ATR change {atr_change:+.6f} outside range [{self.p.short_atr_decrement_min_threshold:.6f}, {self.p.short_atr_decrement_max_threshold:.6f}]")
+                                    self._reset_pullback_state()
+                                    return False
+                        # If decrement filter is DISABLED, allow all decrements (pass through)
+
+                        # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
+
+                    # Transition to Phase 3: Start entry window countdown
+                    self.pullback_state = "WAITING_BREAKOUT"
+                    self.entry_window_start = current_bar
+                else:
+                    # No pullback occurred (no green candles), reset
+                    self._reset_pullback_state()
+            return False
+
+        # PHASE 3: BREAKOUT CONFIRMATION AND ENTRY
+        elif self.pullback_state == "WAITING_BREAKOUT":
+            # Check if entry window expired
+            bars_in_window = current_bar - self.entry_window_start
+            # SAFETY CHECK: If bars_in_window is unreasonably high, reset state
+            if bars_in_window > 50:  # Safety limit - should never exceed this
+                self._reset_pullback_state()
+                return False
+            if bars_in_window >= self.p.short_entry_window_periods:
+                self._reset_pullback_state()
+                return False
+
+            # Entry Trigger Condition: current low <= breakout_target (already includes pip offset)
+            if current_low <= self.breakout_target:
+                # 🔧 CRITICAL FIX: Validate ALL filters BEFORE any entry processing
+                if not self._validate_all_short_entry_filters():
+                    if self.p.verbose_debug:
+                        print(f"❌ ENTRY BLOCKED: SHORT entry validation failed at breakout")
+                    return False
+
+                # Breakout detected! All SHORT entry conditions passed
+                # Calculate ATR increment for validation and recording
+                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+
+                # Always calculate ATR change for reporting purposes
+                if self.signal_detection_atr is not None:
+                    atr_change = current_atr - self.signal_detection_atr
+                    # Store values for trade recording (always, regardless of filter status)
+                    self.entry_atr_increment = atr_change
+                    self.entry_signal_detection_atr = self.signal_detection_atr
+                else:
+                    self.entry_atr_increment = None
+                    self.entry_signal_detection_atr = None
+
+                # Check ATR increment/decrement threshold if ATR filter is enabled
+                if self.p.short_use_atr_filter and self.signal_detection_atr is not None:
+                    atr_change = current_atr - self.signal_detection_atr
+
+                    # ATR CHANGE FILTERING LOGIC (ROBUST)
+                    # Rule 1: If ATR is incrementing (positive change: low → high volatility)
+                    if atr_change > 0:
+                        if self.p.short_use_atr_increment_filter:
+                            # Increment filter is ENABLED - check if within allowed range
+                            if not (
+                                self.p.short_atr_increment_min_threshold <= atr_change <= self.p.short_atr_increment_max_threshold):
+                                if self.p.print_signals:
+                                    print(
+                                        f"ATR INCREMENT Filter: SHORT entry rejected - ATR increment {atr_change:+.6f} outside range [{self.p.short_atr_increment_min_threshold:.6f}, {self.p.short_atr_increment_max_threshold:.6f}]")
+                                return False
+                    # Rule 2: If ATR is decrementing (negative change: high → low volatility)
+                    elif atr_change < 0:
+                        if self.p.short_use_atr_decrement_filter:
+                            # Decrement filter is ENABLED - check if atr_change is within optimal negative range
+                            if not (
+                                self.p.short_atr_decrement_min_threshold <= atr_change <= self.p.short_atr_decrement_max_threshold):
+                                if self.p.print_signals:
+                                    print(
+                                        f"ATR DECREMENT Filter: SHORT entry rejected - ATR change {atr_change:+.6f} outside range [{self.p.short_atr_decrement_min_threshold:.6f}, {self.p.short_atr_decrement_max_threshold:.6f}]")
+                                return False
+                    # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
+
+                if self.p.print_signals:
+                    atr_info = ""
+                    if self.p.short_use_atr_filter and self.signal_detection_atr is not None:
+                        atr_change = self.entry_atr_increment if self.entry_atr_increment is not None else current_atr - self.signal_detection_atr
+                        atr_info = f" | ATR: {current_atr:.6f} (signal: {self.signal_detection_atr:.6f}, inc: {atr_change:+.6f})"
+                    print(f"SHORT BREAKOUT ENTRY! Low={current_low:.5f} <= target={self.breakout_target:.5f}{atr_info}")
+
+                # ✅ CRITICAL FIX: Store ATR values BEFORE reset to preserve them for trade recording
+                temp_signal_detection_atr = self.signal_detection_atr
+                temp_entry_atr_increment = self.entry_atr_increment
+                print(
+                    f"🔍 DEBUG SHORT: Before reset - signal_detection_atr={temp_signal_detection_atr}, entry_atr_increment={temp_entry_atr_increment}")  # DEBUG
+
+                # Reset state machine and trigger entry
+                self._reset_pullback_state()
+
+                # ✅ CRITICAL FIX: Restore ATR values AFTER reset for trade recording
+                self.entry_signal_detection_atr = temp_signal_detection_atr
+                self.entry_atr_increment = temp_entry_atr_increment
+                print(
+                    f"🔍 DEBUG SHORT: After restore - entry_signal_detection_atr={self.entry_signal_detection_atr}, entry_atr_increment={self.entry_atr_increment}")  # DEBUG
+
+                return True
+            return False
+
+        return False
+
+    def _is_in_trading_time_range(self, dt):
+        """Check if current time is within allowed trading hours (UTC)"""
+        if not self.p.use_time_range_filter:
+            return True
+
+        current_hour = dt.hour
+        current_minute = dt.minute
+
+        # Convert to total minutes for easier comparison
+        current_time_minutes = current_hour * 60 + current_minute
+        start_time_minutes = self.p.entry_start_hour * 60 + self.p.entry_start_minute
+        end_time_minutes = self.p.entry_end_hour * 60 + self.p.entry_end_minute
+
+        # Check if current time is within the allowed range
+        if start_time_minutes <= end_time_minutes:
+            # Normal case: start time is before end time (same day)
+            return start_time_minutes <= current_time_minutes <= end_time_minutes
+        else:
+            # Edge case: range crosses midnight (e.g., 22:00 to 06:00)
+            return current_time_minutes >= start_time_minutes or current_time_minutes <= end_time_minutes
+
+    def _basic_entry_conditions(self):
+        """Check basic entry conditions 1 & 2 for pullback system"""
+        # 1. Previous candle bullish check (optional)
+        try:
+            prev_bull = self.data.close[-1] > self.data.open[-1]
+        except IndexError:
+            prev_bull = False
+
+        # Check candle direction filter (optional)
+        candle_direction_ok = True
+        if self.p.long_use_candle_direction_filter:
+            candle_direction_ok = prev_bull
+            if not candle_direction_ok:
+                return False
+
+        # 2. EMA crossover check (ANY of the three)
+        cross_fast = self._cross_above(self.ema_confirm, self.ema_fast)
+        cross_medium = self._cross_above(self.ema_confirm, self.ema_medium)
+        cross_slow = self._cross_above(self.ema_confirm, self.ema_slow)
+        cross_any = cross_fast or cross_medium or cross_slow
+
+        return candle_direction_ok and cross_any
+
+    def _validate_all_entry_filters(self):
+        """Validate all entry filters (3-6) for pullback entry"""
+        # 3. EMA order condition
+        if self.p.long_use_ema_order_condition:
+            ema_order_ok = (
+                self.ema_confirm[0] > self.ema_fast[0] and
+                self.ema_confirm[0] > self.ema_medium[0] and
+                self.ema_confirm[0] > self.ema_slow[0]
+            )
+            if not ema_order_ok:
+                if self.p.verbose_debug:
+                    print(
+                        f"❌ EMA ORDER CONDITION FAILED: ema confirm {self.ema_confirm[0]} > ema fast {self.ema_fast[0]} > ema medium {self.ema_medium[0]} > ema slow {self.ema_slow[0]}")
+                return False
+
+        # 4. Price filter EMA
+        if self.p.long_use_price_filter_ema:
+            price_above_filter = self.data.close[0] > self.ema_filter_price[0]
+            if not price_above_filter:
+                if self.p.verbose_debug:
+                    print(
+                        f"❌ EMA PRICE FILER FAILED: close {self.data.close[0]} > ema fildetr price {self.ema_filter_price[0]}")
+                return False
+
+        # 4.5. EMA position filter (LONG: all EMAs below price)
+        if self.p.long_use_ema_below_price_filter:
+            emas_below_price = (
+                self.ema_fast[0] < self.data.close[0] and
+                self.ema_medium[0] < self.data.close[0] and
+                self.ema_slow[0] < self.data.close[0]
+            )
+            if not emas_below_price:
+                if self.p.verbose_debug:
+                    print(
+                        f"❌ EMA POSITION FILTER FAILED: close {self.data.close[0]} > ema fast {self.ema_fast[0]} > ema medium {self.ema_medium[0]} > ema slow {self.ema_slow[0]}")
+                return False
+
+        # 5. Angle filter
+        if self.p.long_use_angle_filter:
+            current_angle = self._angle()
+            angle_ok = self.p.long_min_angle <= current_angle <= self.p.long_max_angle
+            if self.p.verbose_debug:
+                print(f"🔍 ANGLE VALIDATION DEBUG - LONG Pullback Entry:")
+                print(f"   📐 Current Angle: {current_angle:.2f}°")
+                print(f"   📏 Required Range: {self.p.long_min_angle:.1f}° to {self.p.long_max_angle:.1f}°")
+                print(f"   ✅ Angle OK: {angle_ok}")
+            if not angle_ok:
+                if self.p.verbose_debug:
+                    print(
+                        f"❌ ANGLE FILTER REJECTED: LONG entry blocked - angle {current_angle:.2f}° outside range [{self.p.long_min_angle:.1f}°, {self.p.long_max_angle:.1f}°]")
+                return False
+
+        # 6. ATR Increment/Decrement filters
+        atr_increment = getattr(self, 'entry_atr_increment', None)
+        if atr_increment is not None:
+            # Check ATR increment filter (positive changes)
+            if self.p.long_use_atr_increment_filter and atr_increment >= 0:
+                atr_increment_ok = self.p.long_atr_increment_min_threshold <= atr_increment <= self.p.long_atr_increment_max_threshold
+                if not atr_increment_ok:
+                    if self.p.verbose_debug:
+                        print(
+                            f"❌ ATR INCREMENT FILTER REJECTED: LONG entry blocked - increment {atr_increment:.6f} outside range [{self.p.long_atr_increment_min_threshold:.6f}, {self.p.long_atr_increment_max_threshold:.6f}]")
+                    return False
+
+            # Check ATR decrement filter (negative changes)
+            if self.p.long_use_atr_decrement_filter and atr_increment < 0:
+                atr_decrement_ok = self.p.long_atr_decrement_min_threshold <= atr_increment <= self.p.long_atr_decrement_max_threshold
+                if not atr_decrement_ok:
+                    if self.p.verbose_debug:
+                        print(
+                            f"❌ ATR DECREMENT FILTER REJECTED: LONG entry blocked - decrement {atr_increment:.6f} outside range [{self.p.long_atr_decrement_min_threshold:.6f}, {self.p.long_atr_decrement_max_threshold:.6f}]")
+                    return False
+
+        return True
+
+    def _basic_short_entry_conditions(self):
+        """Check basic SHORT entry conditions 1 & 2 for pullback system"""
+        # 1. Previous candle bearish check (optional - opposite of LONG)
+        try:
+            prev_bear = self.data.close[-1] < self.data.open[-1]
+        except IndexError:
+            prev_bear = False
+
+        # Check candle direction filter (optional)
+        candle_direction_ok = True
+        if self.p.short_use_candle_direction_filter:
+            candle_direction_ok = prev_bear
+            if not candle_direction_ok:
+                return False
+
+        # 2. EMA crossunder check (ANY of the three) - opposite of LONG
+        cross_fast = self._cross_below(self.ema_confirm, self.ema_fast)
+        cross_medium = self._cross_below(self.ema_confirm, self.ema_medium)
+        cross_slow = self._cross_below(self.ema_confirm, self.ema_slow)
+        cross_any = cross_fast or cross_medium or cross_slow
+
+        return candle_direction_ok and cross_any
+
+    def _validate_all_short_entry_filters(self):
+        """Validate all SHORT entry filters (3-6) for pullback entry"""
+        # 3. EMA order condition (opposite of LONG)
+        if self.p.short_use_ema_order_condition:
+            ema_order_ok = (
+                self.ema_confirm[0] < self.ema_fast[0] and
+                self.ema_confirm[0] < self.ema_medium[0] and
+                self.ema_confirm[0] < self.ema_slow[0]
+            )
+            if not ema_order_ok:
+                return False
+
+        # 4. Price filter EMA (opposite of LONG)
+        if self.p.short_use_price_filter_ema:
+            price_below_filter = self.data.close[0] < self.ema_filter_price[0]
+            if not price_below_filter:
+                return False
+
+        # 4.5. EMA position filter (SHORT: all EMAs above price)
+        if self.p.short_use_ema_above_price_filter:
+            emas_above_price = (
+                self.ema_fast[0] > self.data.close[0] and
+                self.ema_medium[0] > self.data.close[0] and
+                self.ema_slow[0] > self.data.close[0]
+            )
+            if not emas_above_price:
+                return False
+
+        # 5. Angle filter (opposite of LONG) - FIX: Use SHORT scale factor
+        if self.p.short_use_angle_filter:
+            # Calculate angle with SHORT scale factor (not LONG)
+            try:
+                current_ema = float(self.ema_confirm[0])
+                previous_ema = float(self.ema_confirm[-1])
+                rise = (current_ema - previous_ema) * self.p.short_angle_scale_factor
+                angle_radians = math.atan(rise)
+                current_angle = math.degrees(angle_radians)
+            except:
+                current_angle = 0.0
+
+            angle_ok = self.p.short_min_angle <= current_angle <= self.p.short_max_angle
+            if not angle_ok:
+                return False
+
+        # 6. ATR Increment/Decrement filters
+        atr_increment = getattr(self, 'entry_atr_increment', None)
+        if atr_increment is not None:
+            # Check ATR increment filter (positive changes)
+            if self.p.short_use_atr_increment_filter and atr_increment >= 0:
+                atr_increment_ok = self.p.short_atr_increment_min_threshold <= atr_increment <= self.p.short_atr_increment_max_threshold
+                if not atr_increment_ok:
+                    if self.p.verbose_debug:
+                        print(
+                            f"❌ ATR INCREMENT FILTER REJECTED: SHORT entry blocked - increment {atr_increment:.6f} outside range [{self.p.short_atr_increment_min_threshold:.6f}, {self.p.short_atr_increment_max_threshold:.6f}]")
+                    return False
+
+            # Check ATR decrement filter (negative changes)
+            if self.p.short_use_atr_decrement_filter and atr_increment < 0:
+                atr_decrement_ok = self.p.short_atr_decrement_min_threshold <= atr_increment <= self.p.short_atr_decrement_max_threshold
+                if not atr_decrement_ok:
+                    if self.p.verbose_debug:
+                        print(
+                            f"❌ ATR DECREMENT FILTER REJECTED: SHORT entry blocked - decrement {atr_increment:.6f} outside range [{self.p.short_atr_decrement_min_threshold:.6f}, {self.p.short_atr_decrement_max_threshold:.6f}]")
+                    return False
+
+        return True
+
+    def _handle_pullback_entry(self, dt, direction='LONG'):
+        """Pullback entry state machine logic
+
+        Args:
+            dt: Current datetime
+            direction: 'LONG' or 'SHORT' signal direction
+
+        Returns:
+            Boolean indicating if entry should be executed
+        """
+        if direction == 'SHORT':
+            return self._handle_short_pullback_entry(dt)
+        else:
+            return self._handle_long_pullback_entry(dt)
+
+    def _handle_long_pullback_entry(self, dt):
+        """LONG pullback entry state machine logic - 3-phase precise implementation"""
+        # Check time range filter first
+        if not self._is_in_trading_time_range(dt):
+            if self.p.verbose_debug:
+                print(
+                    f"Time Filter: LONG entry rejected - {dt.hour:02d}:{dt.minute:02d} outside {self.p.entry_start_hour:02d}:{self.p.entry_start_minute:02d}-{self.p.entry_end_hour:02d}:{self.p.entry_end_minute:02d} UTC")
+            return False
+
+        current_bar = len(self)
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        current_high = float(self.data.high[0])
+
+        # Check if current candle is red (bearish)
+        is_red_candle = current_close < current_open
+
+        # PHASE 1: SIGNAL DETECTION
+        if self.pullback_state == "NORMAL":
+            # Check for initial entry conditions (EMA crossover + previous bullish candle + filters)
+            if self._basic_entry_conditions():
+                # Store ATR value and bar number when signal is detected
+                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                self.signal_detection_atr = current_atr
+                self.signal_detection_bar = len(self)  # Track bar number when signal was detected
+
+                # Check ATR range threshold if filter is enabled
+                if self.p.long_use_atr_filter:
+                    if current_atr < self.p.long_atr_min_threshold:
+                        if self.p.verbose_debug:
+                            print(
+                                f"ATR Filter: Signal rejected - ATR {current_atr:.6f} < min threshold {self.p.long_atr_min_threshold:.6f}")
+                        return False
+                    if current_atr > self.p.long_atr_max_threshold:
+                        if self.p.verbose_debug:
+                            print(
+                                f"ATR Filter: Signal rejected - ATR {current_atr:.6f} > max threshold {self.p.long_atr_max_threshold:.6f}")
+                        return False
+
+                # Transition to Phase 2: Wait for pullback
+                self.pullback_state = "WAITING_PULLBACK"
+                self.pullback_red_count = 0
+                self.first_red_high = None
+                self.breakout_target = None  # Will be set by first pullback candle
+                return False  # Don't enter yet, wait for pullback
+            return False
+
+        # PHASE 2: PULLBACK WAIT & SETTING THE BREAKOUT LEVEL
+        elif self.pullback_state == "WAITING_PULLBACK":
+            if is_red_candle:
+                self.pullback_red_count += 1
+
+                # CRITICAL: Set breakout level ONLY from the FIRST red candle
+                if self.pullback_red_count == 1:
+                    self.first_red_high = current_high
+                    # Set breakout target immediately when first pullback candle appears
+                    self.breakout_target = self.first_red_high
+
+                # Check if we exceeded max red candles
+                if self.pullback_red_count > self.p.long_pullback_max_candles:
+                    self._reset_pullback_state()
+                    return False
+
+            else:  # Green candle - pullback sequence ended
+                if self.pullback_red_count >= self.p.long_pullback_max_candles:
+                    # Pullback sequence complete (required number of red candles occurred)
+                    # Store ATR value when pullback phase ends
+                    current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+                    self.pullback_start_atr = current_atr
+
+                    # Check ATR increment/decrement condition if filter is enabled
+                    if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
+                        atr_change = current_atr - self.signal_detection_atr
+
+                        # ATR CHANGE FILTERING LOGIC
+                        # Rule 1: If ATR is incrementing (positive change: low → high volatility)
+                        if atr_change > 0:
+                            if self.p.long_use_atr_increment_filter:
+                                # Increment filter is ENABLED - check if within allowed range
+                                if not (
+                                    self.p.long_atr_increment_min_threshold <= atr_change <= self.p.long_atr_increment_max_threshold):
+                                    if self.p.verbose_debug:
+                                        print(
+                                            f"ATR INCREMENT Filter: LONG pullback rejected - ATR increment {atr_change:+.6f} outside range [{self.p.long_atr_increment_min_threshold:.6f}, {self.p.long_atr_increment_max_threshold:.6f}]")
+                                    self._reset_pullback_state()
+                                    return False
+                        # Rule 2: If ATR is decrementing (negative change: high → low volatility)
+                        elif atr_change < 0:
+                            if self.p.long_use_atr_decrement_filter:
+                                # Decrement filter is ENABLED - check if atr_change is within optimal negative range
+                                if not (
+                                    self.p.long_atr_decrement_min_threshold <= atr_change <= self.p.long_atr_decrement_max_threshold):
+                                    if self.p.verbose_debug:
+                                        print(
+                                            f"ATR DECREMENT Filter: LONG pullback rejected - ATR change {atr_change:+.6f} outside range [{self.p.long_atr_decrement_min_threshold:.6f}, {self.p.long_atr_decrement_max_threshold:.6f}]")
+                                    self._reset_pullback_state()
+                                    return False
+                        # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
+
+                    # Transition to Phase 3: Start entry window countdown
+                    self.pullback_state = "WAITING_BREAKOUT"
+                    self.entry_window_start = current_bar
+                else:
+                    # No pullback occurred (no red candles), reset
+                    self._reset_pullback_state()
+            return False
+
+        # PHASE 3: BREAKOUT CONFIRMATION AND ENTRY
+        elif self.pullback_state == "WAITING_BREAKOUT":
+            # Check if entry window expired
+            bars_in_window = current_bar - self.entry_window_start
+            # SAFETY CHECK: If bars_in_window is unreasonably high, reset state
+            if bars_in_window > 50:  # Safety limit - should never exceed this
+                self._reset_pullback_state()
+                return False
+            if bars_in_window >= self.p.long_entry_window_periods:
+                self._reset_pullback_state()
+                return False
+
+            # Entry Trigger Condition: current high >= breakout_target (already includes pip offset)
+            if current_high >= self.breakout_target:
+                # 🔧 CRITICAL FIX: Validate ALL filters BEFORE any entry processing
+                if not self._validate_all_entry_filters():
+                    if self.p.verbose_debug:
+                        print(f"❌ ENTRY BLOCKED: LONG entry validation failed at breakout")
+                    return False
+
+                # Breakout detected! All entry conditions passed
+                # Calculate ATR increment for validation and recording
+                current_atr = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
+
+                # Always calculate ATR change for reporting purposes
+                if self.signal_detection_atr is not None:
+                    atr_change = current_atr - self.signal_detection_atr
+                    # Store values for trade recording (always, regardless of filter status)
+                    self.entry_atr_increment = atr_change
+                    self.entry_signal_detection_atr = self.signal_detection_atr
+                else:
+                    self.entry_atr_increment = None
+                    self.entry_signal_detection_atr = None
+
+                # Check ATR increment/decrement threshold if ATR filter is enabled
+                if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
+                    atr_change = current_atr - self.signal_detection_atr
+
+                    # ATR CHANGE FILTERING LOGIC (ROBUST)
+                    # Rule 1: If ATR is incrementing (positive change: low → high volatility)
+                    if atr_change > 0:
+                        if self.p.long_use_atr_increment_filter:
+                            # Increment filter is ENABLED - check if within allowed range
+                            if not (
+                                self.p.long_atr_increment_min_threshold <= atr_change <= self.p.long_atr_increment_max_threshold):
+                                if self.p.print_signals:
+                                    print(
+                                        f"ATR INCREMENT Filter: LONG entry rejected - ATR increment {atr_change:+.6f} outside range [{self.p.long_atr_increment_min_threshold:.6f}, {self.p.long_atr_increment_max_threshold:.6f}]")
+                                return False
+                    # Rule 2: If ATR is decrementing (negative change: high → low volatility)
+                    elif atr_change < 0:
+                        if self.p.long_use_atr_decrement_filter:
+                            # Decrement filter is ENABLED - check if atr_change is within optimal negative range
+                            if not (
+                                self.p.long_atr_decrement_min_threshold <= atr_change <= self.p.long_atr_decrement_max_threshold):
+                                if self.p.print_signals:
+                                    print(
+                                        f"ATR DECREMENT Filter: LONG entry rejected - ATR change {atr_change:+.6f} outside range [{self.p.long_atr_decrement_min_threshold:.6f}, {self.p.long_atr_decrement_max_threshold:.6f}]")
+                                return False
+                    # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
+
+                if self.p.print_signals:
+                    atr_info = ""
+                    if self.p.long_use_atr_filter and self.signal_detection_atr is not None:
+                        atr_change = self.entry_atr_increment if self.entry_atr_increment is not None else current_atr - self.signal_detection_atr
+                        atr_info = f" | ATR: {current_atr:.6f} (signal: {self.signal_detection_atr:.6f}, inc: {atr_change:+.6f})"
+                    print(
+                        f"LONG BREAKOUT ENTRY! High={current_high:.5f} >= target={self.breakout_target:.5f}{atr_info}")
+
+                # ✅ CRITICAL FIX: Store ATR values BEFORE reset to preserve them for trade recording
+                temp_signal_detection_atr = self.signal_detection_atr
+                temp_entry_atr_increment = self.entry_atr_increment
+                print(
+                    f"🔍 DEBUG SHORT: Before reset - signal_detection_atr={temp_signal_detection_atr}, entry_atr_increment={temp_entry_atr_increment}")  # DEBUG
+
+                # Reset state machine and trigger entry
+                self._reset_pullback_state()
+
+                # ✅ CRITICAL FIX: Restore ATR values AFTER reset for trade recording
+                self.entry_signal_detection_atr = temp_signal_detection_atr
+                self.entry_atr_increment = temp_entry_atr_increment
+                print(
+                    f"🔍 DEBUG SHORT: After restore - entry_signal_detection_atr={self.entry_signal_detection_atr}, entry_atr_increment={self.entry_atr_increment}")  # DEBUG
+
+                return True
+            return False
+
+        return False
+
+    def _instrument_pair(self):
+        instrument = str(getattr(self.p, 'instrument_name', '') or '').strip().upper()
+        if len(instrument) >= 6:
+            pair = instrument[:6]
+            return pair[:3], pair[3:6], pair
+        return '', '', instrument
+
+    def _quote_to_usd_rate(self, quote_ccy, current_price):
+        quote = str(quote_ccy or '').strip().upper()
+        base, _, pair = self._instrument_pair()
+
+        if quote == 'USD':
+            return 1.0
+
+        # For USDXXX pairs the strategy close is quote-per-USD, so quote->USD is inverse.
+        if base == 'USD' and pair.startswith('USD') and current_price > 0:
+            return 1.0 / current_price
+
+        # JPY crosses rely on configured USDJPY conversion when direct USD quote is unavailable.
+        if quote == 'JPY':
+            try:
+                usdjpy = float(getattr(self.p, 'forex_jpy_rate', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                usdjpy = 0.0
+            if usdjpy > 0:
+                return 1.0 / usdjpy
+
+        return None
+
+    def _collect_instrument_broker_positions(self):
+        """Collect and value broker positions only for the configured instrument."""
+        base, quote, pair = self._instrument_pair()
+        current_price = float(self.data.close[0])
+
+        snapshot = {
+            'pair': pair,
+            'positions': [],
+            'market_value_usd_total': 0.0,
+            'cost_basis_usd_total': 0.0,
+            'unrealized_pnl_usd_total': 0.0,
+            'has_usd_valuation': False,
+        }
+
+        if not hasattr(self.p, 'ib_connection') or self.p.ib_connection is None:
+            return snapshot
+        if not hasattr(self.p.ib_connection, 'connected') or not self.p.ib_connection.connected:
+            return snapshot
+
+        try:
+            raw_positions = self.p.ib_connection.get_positions() or []
+        except Exception:
+            return snapshot
+
+        for position in raw_positions:
+            symbol = str(position.get('symbol', '') or '').strip().upper()
+            currency = str(position.get('currency', '') or '').strip().upper()
+            sec_type = str(position.get('secType', '') or '').strip().upper()
+
+            if symbol != base or currency != quote:
+                continue
+
+            qty = float(position.get('position', 0.0) or 0.0)
+            avg_cost = float(position.get('avgCost', 0.0) or 0.0)
+            quote_to_usd = self._quote_to_usd_rate(currency, current_price)
+
+            market_value_usd = None
+            cost_basis_usd = None
+            unrealized_pnl_usd = None
+            if quote_to_usd is not None:
+                market_value_usd = qty * current_price * quote_to_usd
+                cost_basis_usd = qty * avg_cost * quote_to_usd
+                unrealized_pnl_usd = market_value_usd - cost_basis_usd
+                snapshot['has_usd_valuation'] = True
+                snapshot['market_value_usd_total'] += market_value_usd
+                snapshot['cost_basis_usd_total'] += cost_basis_usd
+                snapshot['unrealized_pnl_usd_total'] += unrealized_pnl_usd
+
+            snapshot['positions'].append({
+                'symbol': symbol,
+                'currency': currency,
+                'sec_type': sec_type,
+                'qty': qty,
+                'avg_cost': avg_cost,
+                'market_value_usd': market_value_usd,
+                'cost_basis_usd': cost_basis_usd,
+                'unrealized_pnl_usd': unrealized_pnl_usd,
+            })
+
+        return snapshot
+
+    def _print_broker_positions(self, snapshot=None):
+        """Print broker positions for the configured instrument only."""
+        base, quote, pair = self._instrument_pair()
+
+        # Check if ib_connection parameter is available
+        if not hasattr(self.p, 'ib_connection'):
+            print("[DEBUG] ib_connection parameter not found in strategy params")
             return
 
-        dt = bt.num2date(self.data.datetime[0])
+        if self.p.ib_connection is None:
+            print("[DEBUG] ib_connection is None - not connected to broker")
+            print("[INFO] To display broker positions:")
+            print("       1. Ensure TWS/Gateway is running")
+            print("       2. Enable API connections in TWS settings")
+            print("       3. Pass ib_connection to strategy: cerebro.addstrategy(StrategyClass, ib_connection=connection_obj)")
+            return
 
-        # Get accurate PnL from Backtrader
-        pnl = trade.pnlcomm
+        # Check if connection is established
+        if not hasattr(self.p.ib_connection, 'connected'):
+            print("[DEBUG] ib_connection has no 'connected' attribute")
+            return
 
-        # Calculate entry and exit prices from PnL and trade data
-        # For LONG trades: PnL = (exit_price - entry_price) * size - commission
-        # For SHORT trades: PnL = (entry_price - exit_price) * size - commission
-        # In both cases: exit_price can be calculated from entry_price and pnl
+        if not self.p.ib_connection.connected:
+            print("[DEBUG] ib_connection.connected is False - broker not connected")
+            return
 
-        entry_price = self.last_entry_price if self.last_entry_price else 0
-        position_direction = 'LONG' if trade.size > 0 else 'SHORT'
+        try:
+            if snapshot is None:
+                snapshot = self._collect_instrument_broker_positions()
 
-        if entry_price > 0 and trade.size != 0:
-            # Calculate exit price from PnL
-            if position_direction == 'LONG':
-                # LONG: exit = entry + (pnl / size)
-                exit_price = entry_price + (pnl / trade.size)
-            else:
-                # SHORT: exit = entry - (pnl / size) [size is negative for SHORT]
-                exit_price = entry_price + (pnl / trade.size)  # This works for both since size is negative for SHORT
-        else:
-            # Fallback to trade.price (might be average or exit price)
-            exit_price = trade.price
-            if exit_price == entry_price:
-                # Last resort: estimate from current data
-                exit_price = float(self.data.close[0])
+            positions = snapshot.get('positions', [])
+            if not positions:
+                print(f"[DEBUG] No broker positions found for instrument {pair or (base + quote)}")
+                return
 
-        # Use stored exit reason from notify_order (more reliable than price comparison)
-        exit_reason = getattr(self, 'last_exit_reason', 'UNKNOWN')
+            print(f"\n=== BROKER POSITIONS ({len(positions)} total for {pair}) ===")
+            for pos in positions:
+                line = (
+                    f"  {pos['symbol']}/{pos['currency']} ({pos['sec_type']}): "
+                    f"Qty={pos['qty']:+,.2f} | AvgCost={pos['avg_cost']:.5f}"
+                )
+                if pos['market_value_usd'] is not None and pos['unrealized_pnl_usd'] is not None:
+                    line += (
+                        f" | MktValue(USD)={pos['market_value_usd']:+,.2f}"
+                        f" | UnrealPnL(USD)={pos['unrealized_pnl_usd']:+,.2f}"
+                    )
+                print(line)
 
-        # Fallback: If no stored reason, try price comparison
-        if exit_reason == 'UNKNOWN':
-            if self.stop_level and abs(exit_price - self.stop_level) < 0.0002:
-                exit_reason = "STOP_LOSS"
-            elif self.take_level and abs(exit_price - self.take_level) < 0.0002:
-                exit_reason = "TAKE_PROFIT"
-            else:
-                exit_reason = "MANUAL_CLOSE"
+            if snapshot.get('has_usd_valuation'):
+                print(
+                    f"  Totals: MktValue(USD)={snapshot['market_value_usd_total']:+,.2f} "
+                    f"| CostBasis(USD)={snapshot['cost_basis_usd_total']:+,.2f} "
+                    f"| UnrealPnL(USD)={snapshot['unrealized_pnl_usd_total']:+,.2f}"
+                )
+            print("=" * 60)
 
-        # Update statistics
-        self.trades += 1
-        if pnl > 0:
-            self.wins += 1
-            self.gross_profit += pnl
-        else:
-            self.losses += 1
-            self.gross_loss += abs(pnl)
-
-        # PINE SCRIPT EQUIVALENT: Record exit bar for ta.barssince() logic
-        current_bar = len(self)
-        self.trade_exit_bars.append(current_bar)
-
-        # Mark that exit action occurred on this bar (Pine Script sequential processing)
-        self.exit_this_bar = True
-
-        # Keep only recent exit bars (last 100 to avoid memory bloat)
-        if len(self.trade_exit_bars) > 100:
-            self.trade_exit_bars = self.trade_exit_bars[-100:]
-
-        # Mark last exit bar for legacy compatibility
-        self.last_exit_bar = current_bar
-
-        if self.p.print_signals:
-            # Calculate pips based on position direction
-            if position_direction == 'LONG':
-                pips = (
-                               exit_price - entry_price) / self.p.forex_pip_value if self.p.forex_pip_value and entry_price > 0 else 0
-            else:  # SHORT
-                pips = (
-                               entry_price - exit_price) / self.p.forex_pip_value if self.p.forex_pip_value and entry_price > 0 else 0
-
-            print(
-                f"{position_direction} TRADE CLOSED {dt:%Y-%m-%d %H:%M} reason={exit_reason} PnL={pnl:.2f} Pips={pips:.1f}")
-            print(f"  Entry: {entry_price:.5f} -> Exit: {exit_price:.5f} | Size: {trade.size}")
-
-        # Record trade exit for reporting
-        self._record_trade_exit(dt, exit_price, pnl, exit_reason)
-
-        # Reset levels
-        self.stop_level = None
-        self.take_level = None
-        self.initial_stop_level = None
-
-        # Reset pullback state after trade completion (both LONG and SHORT)
-        if self.p.long_use_pullback_entry or self.p.short_use_pullback_entry:
-            self._reset_pullback_state()
+        except AttributeError as e:
+            print(f"[DEBUG] AttributeError fetching positions: {e}")
+            print(f"[DEBUG] ib_connection type: {type(self.p.ib_connection)}")
+        except Exception as e:
+            print(f"[DEBUG] Exception fetching broker positions: {type(e).__name__}: {e}")
 
     def stop(self):
         # Preserve live state before any end-of-run cleanup.
         self._persist_live_state_snapshot()
 
         if self.p.lifecycle_logging:
-            print(f"[LIFECYCLE] stop | trades={self.trades} | wins={self.wins} | losses={self.losses} | gross_profit={self.gross_profit:.2f} | gross_loss={self.gross_loss:.2f} | final_value={self.broker.get_value():.2f}")
+            self._tagged_print('LIFECYCLE', f"stop | trades={self.trades} | wins={self.wins} | losses={self.losses} | gross_profit={self.gross_profit:.2f} | gross_loss={self.gross_loss:.2f} | final_value={self.broker.get_value():.2f}")
 
         # Close any open positions at strategy end and manually process the trade
         if self.position:
@@ -3300,8 +4091,27 @@ class ITradingStrategy(bt.Strategy):
             starting_cash = float(final_value)
         total_pnl = final_value - starting_cash
 
+        broker_snapshot = self._collect_instrument_broker_positions()
+        adjusted_final_value = final_value
+        adjusted_total_pnl = total_pnl
+        if broker_snapshot.get('has_usd_valuation'):
+            adjusted_final_value = final_value + broker_snapshot['market_value_usd_total']
+            adjusted_total_pnl = adjusted_final_value - starting_cash
+
         print(f"Trades: {self.trades} Wins: {self.wins} Losses: {self.losses} WinRate: {wr:.2f}% PF: {pf:.2f}")
         print(f"Final Value: {final_value:,.2f} | Total PnL: {total_pnl:+,.2f}")
+        if broker_snapshot.get('has_usd_valuation'):
+            print(
+                f"Adjusted Final Value (incl {broker_snapshot['pair']} broker position): "
+                f"{adjusted_final_value:,.2f} | Adjusted Total PnL: {adjusted_total_pnl:+,.2f}"
+            )
+            print(
+                f"  Broker {broker_snapshot['pair']} MktValue(USD): {broker_snapshot['market_value_usd_total']:+,.2f} "
+                f"| Broker UnrealPnL(USD): {broker_snapshot['unrealized_pnl_usd_total']:+,.2f}"
+            )
+
+        # Include broker position details if connection is available
+        self._print_broker_positions(snapshot=broker_snapshot)
 
         print(f"\n=== ENTRY SIGNAL DEBUG STATS ===")
         print(f"Total Entry Signals Evaluated: {self.entry_signal_count}")
@@ -3340,557 +4150,82 @@ class ITradingStrategy(bt.Strategy):
 
 
 class ITradingStrategyAUDUSD(ITradingStrategy):
-    """AUD/USD strategy profile using the shared base strategy implementation.
-
-    Phase 1 tuning guide for AUDUSD:
-    ─────────────────────────────────
-    GATE CONDITIONS (must ALL pass to reach secondary filters):
-      long_use_candle_direction_filter  → False = no prev-candle constraint (most permissive)
-                                          True  = requires prev candle bullish (very restrictive)
-      cross_any                         → EMA confirm crosses fast/med/slow (market-driven)
-
-    SECONDARY FILTERS (evaluated only when gate passes):
-      long_use_angle_filter / long_min_angle / long_max_angle / long_angle_scale_factor
-        With scale=10.0 and range [0.0, 30.0] the filter just requires a positive EMA slope.
-        To widen: increase long_max_angle to 90.0 or set long_use_angle_filter=False.
-
-      long_use_atr_filter / long_atr_min_threshold / long_atr_max_threshold
-        Keeps entries inside a valid volatility band.
-        To widen: lower long_atr_min_threshold (e.g. 0.00010) or raise long_atr_max_threshold.
-
-      long_use_price_filter_ema
-        Requires price above the long-period trend EMA.
-        Set False to allow counter-trend entries, or widen ema_filter_price_length.
-    """
-
-    params = (
-        # === INSTRUMENT ===
-        ('instrument_name', 'AUDUSD'),
-        ('forex_base_currency', 'AUD'),
-        ('forex_quote_currency', 'USD'),
-        ('forex_pip_decimal_places', 5),
-
-        # === TRADING DIRECTION ===
-        ('enable_long_trades', True),
-        ('enable_short_trades', False),
-
-        # === TECHNICAL INDICATORS ===
-        ('ema_fast_length', 18),
-        ('ema_medium_length', 18),
-        ('ema_slow_length', 24),
-        ('ema_confirm_length', 1),        # 1-period EMA ≈ close price → fast crossover response
-        ('ema_filter_price_length', 40),  # Trend-alignment filter EMA
-        ('ema_exit_length', 25),
-        ('atr_length', 10),
-
-        # === TIME RANGE FILTER ===
-        ('use_time_range_filter', True),
-        ('entry_start_hour', 23),
-        ('entry_start_minute', 0),
-        ('entry_end_hour', 16),
-        ('entry_end_minute', 0),
-
-        # === RISK MANAGEMENT ===
-        ('long_atr_sl_multiplier', 4.4),
-        ('long_atr_tp_multiplier', 6.8),
-        ('short_atr_sl_multiplier', 2.5),
-        ('short_atr_tp_multiplier', 6.5),
-
-        # === PHASE 1 GATE — LONG ENTRY FILTERS ===
-        # KEY TUNING: candle_direction_filter=False removes the biggest gate blocker.
-        # When True every bearish prior candle blocks Phase 1 regardless of crossover.
-        ('long_use_candle_direction_filter', False),   # ← set True to require bullish prev candle
-        ('long_use_ema_order_condition', False),        # confirm > fast & med & slow
-        ('long_use_price_filter_ema', True),            # close > 40-period trend EMA
-        ('long_use_ema_below_price_filter', False),     # all EMAs below close
-        # Angle filter – with scale=10.0 the effective range is ~0–0.2°; [0,30] = positive slope only
-        ('long_use_angle_filter', True),
-        ('long_min_angle', 0.0),
-        ('long_max_angle', 30.0),
-        ('long_angle_scale_factor', 10.0),
-
-        # === PHASE 1 GATE — SHORT ENTRY FILTERS ===
-        ('short_use_candle_direction_filter', False),  # ← set True to require bearish prev candle
-        ('short_use_ema_order_condition', False),
-        ('short_use_price_filter_ema', True),
-        ('short_use_ema_above_price_filter', False),
-        ('short_use_angle_filter', True),
-        ('short_min_angle', -90.0),
-        ('short_max_angle', -20.0),
-        ('short_angle_scale_factor', 10.0),
-
-        # === LONG ATR VOLATILITY FILTER ===
-        ('long_use_atr_filter', True),
-        ('long_atr_min_threshold', 0.00015),   # ↓ lower to accept lower-volatility entries
-        ('long_atr_max_threshold', 0.00060),   # ↑ raised from 0.0005 for wider acceptance
-        ('long_use_atr_increment_filter', False),
-        ('long_atr_increment_min_threshold', 0.000001),
-        ('long_atr_increment_max_threshold', 0.0111),
-        ('long_use_atr_decrement_filter', False),
-        ('long_atr_decrement_min_threshold', -0.004),
-        ('long_atr_decrement_max_threshold', 0),
-
-        # === SHORT ATR VOLATILITY FILTER ===
-        ('short_use_atr_filter', True),
-        ('short_atr_min_threshold', 0.000400),
-        ('short_atr_max_threshold', 0.000750),
-        ('short_use_atr_increment_filter', True),
-        ('short_atr_increment_min_threshold', 0.000001),
-        ('short_atr_increment_max_threshold', 0.001000),
-        ('short_use_atr_decrement_filter', True),
-        ('short_atr_decrement_min_threshold', -0.000080),
-        ('short_atr_decrement_max_threshold', -0.000020),
-
-        # === VOLATILITY EXPANSION CHANNEL / PULLBACK ENTRY ===
-        ('long_use_pullback_entry', True),
-        ('long_pullback_max_candles', 2),
-        ('long_entry_window_periods', 1),
-        ('use_window_time_offset', False),
-        ('window_offset_multiplier', 0.5),
-        ('window_price_offset_multiplier', 0.001),
+    params = dict(
+        instrument_name='AUDUSD',
+        forex_base_currency='AUD',
+        forex_quote_currency='USD',
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        contract_size=100000,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
     )
 
 
 class ITradingStrategyEURUSD(ITradingStrategy):
-    """EUR/USD trading strategy.
-
-    Inherits the shared ITradingStrategy base implementation and overrides
-    parameters with values optimized for the EUR/USD forex pair.
-
-    Key EURUSD-specific characteristics:
-    - LONG-only by default (optimized for uptrend bias on EURUSD)
-    - Tighter ATR thresholds tuned to EURUSD typical 5-minute volatility
-    - Faster EMA confirmation period (period=1) for immediate price response
-    - Wider price-filter EMA (period=70) for stronger trend alignment
-    - Narrower trading window (03:00-21:00 UTC) matching EURUSD peak liquidity
-    - Smaller SL multiplier (1.5x ATR) with larger TP multiplier (10x ATR)
-      for asymmetric risk/reward targeting
-
-    Instrument settings:
-    - Base: EUR / Quote: USD
-    - Standard 100,000-unit forex lot size
-    - 4-decimal-place pip values (0.0001)
-    - 30:1 leverage / 3.33% margin requirement
-    """
-
-    params = (
-        # === INSTRUMENT ===
-        ('instrument_name', 'EURUSD'),
-        ('forex_base_currency', 'EUR'),
-        ('forex_quote_currency', 'USD'),
-        ('forex_pip_decimal_places', 4),
-
-        # === TRADING DIRECTION (LONG-only optimized for EURUSD) ===
-        ('enable_long_trades', True),
-        ('enable_short_trades', False),
-
-        # === TECHNICAL INDICATORS (EURUSD-optimized) ===
-        ('ema_fast_length', 18),
-        ('ema_medium_length', 18),
-        ('ema_slow_length', 24),
-        ('ema_confirm_length', 1),           # Immediate-response confirmation EMA
-        ('ema_filter_price_length', 70),     # Strong trend-alignment filter
-
-        # === ATR PERIOD ===
-        ('atr_length', 10),
-
-        # === LONG ATR VOLATILITY FILTER (EURUSD 5-min typical range) ===
-        ('long_use_atr_filter', True),
-        ('long_atr_min_threshold', 0.000150),
-        ('long_atr_max_threshold', 0.000499),
-        # ATR increment filter: only accept entries where volatility is expanding
-        ('long_use_atr_increment_filter', True),
-        ('long_atr_increment_min_threshold', 0.000050),
-        ('long_atr_increment_max_threshold', 0.000080),
-        # ATR decrement filter: disabled – allow trades during stable volatility
-        ('long_use_atr_decrement_filter', False),
-        ('long_atr_decrement_min_threshold', -0.000025),
-        ('long_atr_decrement_max_threshold', -0.000001),
-
-        # === LONG ENTRY FILTERS ===
-        ('long_use_ema_order_condition', False),   # No strict EMA ordering required
-        ('long_use_price_filter_ema', True),       # Price must be above 70-period EMA
-        ('long_use_candle_direction_filter', False), # No prior-candle direction check
-        ('long_use_angle_filter', False),           # No slope-angle filter
-        ('long_min_angle', 35.0),
-        ('long_max_angle', 85.0),
-        ('long_angle_scale_factor', 10000.0),
-
-        # === RISK MANAGEMENT (EURUSD asymmetric R:R) ===
-        ('long_atr_sl_multiplier', 1.5),   # Tight stop: entry_low - 1.5 × ATR
-        ('long_atr_tp_multiplier', 10.0),  # Wide target: entry_high + 10 × ATR
-
-        # === VOLATILITY EXPANSION CHANNEL / PULLBACK ENTRY ===
-        ('long_use_pullback_entry', True),
-        ('long_pullback_max_candles', 2),   # Require 2 bearish pullback candles
-        ('long_entry_window_periods', 1),   # 1-bar breakout confirmation window
-        ('use_window_time_offset', False),  # Open window immediately after pullback
-        ('window_offset_multiplier', 1.0),
-        ('window_price_offset_multiplier', 0.01),  # 1% of candle range as channel expansion
-
-        # === TIME RANGE FILTER (EURUSD peak liquidity: London + NY sessions) ===
-        ('use_time_range_filter', True),
-        ('entry_start_hour', 3),    # 03:00 UTC – London pre-market
-        ('entry_start_minute', 0),
-        ('entry_end_hour', 21),     # 21:00 UTC – NY session close
-        ('entry_end_minute', 0),
+    params = dict(
+        instrument_name='EURUSD',
+        forex_base_currency='EUR',
+        forex_quote_currency='USD',
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        contract_size=100000,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
     )
 
 
 class ITradingStrategyGBPUSD(ITradingStrategy):
-    """GBP/USD trading strategy profile derived from the standalone GBPUSD system.
-
-    This profile keeps the shared strategy engine while applying the long-only,
-    volatility, pullback, and forex settings tuned in `gbpusd.py`.
-    """
-
-    params = (
-        # === INSTRUMENT ===
-        ('instrument_name', 'GBPUSD'),
-        ('forex_base_currency', 'GBP'),
-        ('forex_quote_currency', 'USD'),
-        ('forex_pip_value', 0.0001),
-        ('forex_pip_decimal_places', 4),
-        ('contract_size', 100000),
-        ('forex_spread_pips', 2.2),
-        ('forex_margin_required', 3.33),
-
-        # === TRADING DIRECTION (GBPUSD sample is LONG-only) ===
-        ('enable_long_trades', True),
-        ('enable_short_trades', False),
-
-        # === TECHNICAL INDICATORS ===
-        ('ema_fast_length', 18),
-        ('ema_medium_length', 18),
-        ('ema_slow_length', 24),
-        ('ema_confirm_length', 1),
-        ('ema_filter_price_length', 70),
-        ('ema_exit_length', 25),
-        ('atr_length', 10),
-
-        # === LONG ATR VOLATILITY FILTER ===
-        ('long_use_atr_filter', False),
-        ('long_atr_min_threshold', 0.000300),
-        ('long_atr_max_threshold', 0.000700),
-        ('long_use_atr_increment_filter', False),
-        ('long_atr_increment_min_threshold', 0.000001),
-        ('long_atr_increment_max_threshold', 0.001000),
-        ('long_use_atr_decrement_filter', False),
-        ('long_atr_decrement_min_threshold', -0.000050),
-        ('long_atr_decrement_max_threshold', -0.000001),
-
-        # === LONG ENTRY FILTERS ===
-        ('long_use_ema_order_condition', False),
-        ('long_use_price_filter_ema', True),
-        ('long_use_candle_direction_filter', False),
-        ('long_use_angle_filter', True),
-        ('long_min_angle', 45.0),
-        ('long_max_angle', 95.0),
-        ('long_angle_scale_factor', 10000.0),
-
-        # === RISK MANAGEMENT ===
-        ('long_atr_sl_multiplier', 3.5),
-        ('long_atr_tp_multiplier', 6.5),
-
-        # === PULLBACK / VOLATILITY EXPANSION ENTRY ===
-        ('long_use_pullback_entry', True),
-        ('long_pullback_max_candles', 2),
-        ('long_entry_window_periods', 1),
-        ('use_window_time_offset', False),
-        ('window_offset_multiplier', 1.0),
-        ('window_price_offset_multiplier', 1.0),
-
-        # === TIME FILTER ===
-        ('use_time_range_filter', False),
-        ('entry_start_hour', 7),
-        ('entry_start_minute', 0),
-        ('entry_end_hour', 18),
-        ('entry_end_minute', 0),
-
-        # === REPORTING / DEBUG ===
-        ('verbose_debug', False),
-        ('export_trade_reports', True),
+    params = dict(
+        instrument_name='GBPUSD',
+        forex_base_currency='GBP',
+        forex_quote_currency='USD',
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        contract_size=100000,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
     )
 
 
 class ITradingStrategyEURJPY(ITradingStrategy):
-    """EUR/JPY trading strategy profile derived from the standalone EURJPY system.
-
-    This profile keeps the shared strategy engine while applying the long-only,
-    JPY-pair volatility, pullback, and forex settings tuned in `eurjpy.py`.
-    """
-
-    params = (
-        # === INSTRUMENT ===
-        ('instrument_name', 'EURJPY'),
-        ('forex_base_currency', 'EUR'),
-        ('forex_quote_currency', 'JPY'),
-        ('forex_pip_value', 0.01),
-        ('forex_pip_decimal_places', 3),
-        ('contract_size', 100000),
-        ('forex_spread_pips', 2.0),
-        ('forex_margin_required', 3.33),
-        ('forex_jpy_rate', 152.0),
-
-        # === TRADING DIRECTION (EURJPY sample is LONG-only) ===
-        ('enable_long_trades', True),
-        ('enable_short_trades', False),
-
-        # === TECHNICAL INDICATORS ===
-        ('ema_fast_length', 18),
-        ('ema_medium_length', 18),
-        ('ema_slow_length', 24),
-        ('ema_confirm_length', 1),
-        ('ema_filter_price_length', 70),
-        ('ema_exit_length', 25),
-        ('atr_length', 10),
-
-        # === LONG ATR VOLATILITY FILTER (JPY-pair scale) ===
-        ('long_use_atr_filter', False),
-        ('long_atr_min_threshold', 0.0450),
-        ('long_atr_max_threshold', 0.1100),
-        ('long_use_atr_increment_filter', True),
-        ('long_atr_increment_min_threshold', 0.0005),
-        ('long_atr_increment_max_threshold', 0.0110),
-        ('long_use_atr_decrement_filter', True),
-        ('long_atr_decrement_min_threshold', -0.0020),
-        ('long_atr_decrement_max_threshold', 0.0),
-
-        # === LONG ENTRY FILTERS ===
-        ('long_use_ema_order_condition', False),
-        ('long_use_price_filter_ema', True),
-        ('long_use_candle_direction_filter', False),
-        ('long_use_angle_filter', True),
-        ('long_min_angle', 60.0),
-        ('long_max_angle', 88.0),
-        ('long_angle_scale_factor', 100.0),
-        ('long_use_ema_below_price_filter', False),
-
-        # === RISK MANAGEMENT ===
-        ('long_atr_sl_multiplier', 3.0),
-        ('long_atr_tp_multiplier', 6.5),
-
-        # === PULLBACK / VOLATILITY EXPANSION ENTRY ===
-        ('long_use_pullback_entry', True),
-        ('long_pullback_max_candles', 2),
-        ('long_entry_window_periods', 3),
-        ('use_window_time_offset', False),
-        ('window_offset_multiplier', 2.0),
-        ('window_price_offset_multiplier', 0.01),
-
-        # === TIME FILTER ===
-        ('use_time_range_filter', False),
-        ('entry_start_hour', 7),
-        ('entry_start_minute', 0),
-        ('entry_end_hour', 16),
-        ('entry_end_minute', 0),
-
-        # === REPORTING / DEBUG ===
-        ('verbose_debug', False),
-        ('export_trade_reports', True),
+    params = dict(
+        instrument_name='EURJPY',
+        forex_base_currency='EUR',
+        forex_quote_currency='JPY',
+        forex_pip_value=0.01,
+        forex_pip_decimal_places=3,
+        contract_size=100000,
+        forex_spread_pips=2.0,
+        forex_margin_required=3.33,
+        forex_jpy_rate=152.0,
     )
 
 
 class ITradingStrategyUSDCHF(ITradingStrategy):
-    """USD/CHF trading strategy profile derived from the standalone USDCHF system.
-
-    This profile keeps the shared strategy engine while applying the USDCHF
-    volatility, pullback, and forex settings tuned in `usdchf.py`.
-    """
-
-    params = (
-        # === INSTRUMENT ===
-        ('instrument_name', 'USDCHF'),
-        ('forex_base_currency', 'USD'),
-        ('forex_quote_currency', 'CHF'),
-        ('forex_pip_value', 0.0001),
-        ('forex_pip_decimal_places', 4),
-        ('contract_size', 100000),
-        ('forex_spread_pips', 2.2),
-        ('forex_margin_required', 3.33),
-
-        # === TRADING DIRECTION (USDCHF sample defaults to LONG-only) ===
-        ('enable_long_trades', True),
-        ('enable_short_trades', False),
-
-        # === TECHNICAL INDICATORS ===
-        ('ema_fast_length', 18),
-        ('ema_medium_length', 18),
-        ('ema_slow_length', 24),
-        ('ema_confirm_length', 1),
-        ('ema_filter_price_length', 50),
-        ('ema_exit_length', 25),
-        ('atr_length', 10),
-
-        # === LONG ATR VOLATILITY FILTER ===
-        ('long_use_atr_filter', True),
-        ('long_atr_min_threshold', 0.000300),
-        ('long_atr_max_threshold', 0.000700),
-        ('long_use_atr_increment_filter', False),
-        ('long_atr_increment_min_threshold', 0.000011),
-        ('long_atr_increment_max_threshold', 0.000080),
-        ('long_use_atr_decrement_filter', False),
-        ('long_atr_decrement_min_threshold', -0.000030),
-        ('long_atr_decrement_max_threshold', -0.000001),
-
-        # === SHORT ATR VOLATILITY FILTER (kept for optional future SHORT enablement) ===
-        ('short_use_atr_filter', True),
-        ('short_atr_min_threshold', 0.000400),
-        ('short_atr_max_threshold', 0.000750),
-        ('short_use_atr_increment_filter', True),
-        ('short_atr_increment_min_threshold', 0.000001),
-        ('short_atr_increment_max_threshold', 0.001000),
-        ('short_use_atr_decrement_filter', True),
-        ('short_atr_decrement_min_threshold', -0.000080),
-        ('short_atr_decrement_max_threshold', -0.000020),
-
-        # === ENTRY FILTERS ===
-        ('long_use_ema_order_condition', False),
-        ('long_use_price_filter_ema', True),
-        ('long_use_candle_direction_filter', False),
-        ('long_use_angle_filter', False),
-        ('long_min_angle', 40.0),
-        ('long_max_angle', 80.0),
-        ('long_angle_scale_factor', 10000.0),
-
-        ('short_use_ema_order_condition', False),
-        ('short_use_price_filter_ema', True),
-        ('short_use_candle_direction_filter', True),
-        ('short_use_angle_filter', True),
-        ('short_min_angle', -90.0),
-        ('short_max_angle', -20.0),
-        ('short_angle_scale_factor', 10000.0),
-
-        # === RISK MANAGEMENT ===
-        ('long_atr_sl_multiplier', 2.5),
-        ('long_atr_tp_multiplier', 10.0),
-        ('short_atr_sl_multiplier', 2.5),
-        ('short_atr_tp_multiplier', 6.5),
-
-        # === PULLBACK / VOLATILITY EXPANSION ENTRY ===
-        ('long_use_pullback_entry', True),
-        ('short_use_pullback_entry', True),
-        ('long_pullback_max_candles', 2),
-        ('short_pullback_max_candles', 2),
-        ('long_entry_window_periods', 2),
-        ('short_entry_window_periods', 7),
-        ('use_window_time_offset', False),
-        ('window_offset_multiplier', 1.0),
-        ('window_price_offset_multiplier', 0.01),
-
-        # === TIME FILTER ===
-        ('use_time_range_filter', True),
-        ('entry_start_hour', 7),
-        ('entry_start_minute', 0),
-        ('entry_end_hour', 13),
-        ('entry_end_minute', 0),
-
-        # === REPORTING / DEBUG ===
-        ('verbose_debug', False),
-        ('export_trade_reports', True),
+    params = dict(
+        instrument_name='USDCHF',
+        forex_base_currency='USD',
+        forex_quote_currency='CHF',
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        contract_size=100000,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
     )
 
 
 class ITradingStrategyUSDJPY(ITradingStrategy):
-    """USD/JPY trading strategy profile derived from the standalone USDJPY system.
-
-    This profile keeps the shared strategy engine while applying USDJPY-specific
-    JPY-pair volatility, pullback, and forex settings tuned in `usdjpy.py`.
-    """
-
-    params = (
-        # === INSTRUMENT ===
-        ('instrument_name', 'USDJPY'),
-        ('forex_base_currency', 'USD'),
-        ('forex_quote_currency', 'JPY'),
-        ('forex_pip_value', 0.01),
-        ('forex_pip_decimal_places', 3),
-        ('contract_size', 100000),
-        ('forex_spread_pips', 1.0),
-        ('forex_margin_required', 2.0),
-        ('forex_jpy_rate', 152.0),
-
-        # === TRADING DIRECTION (USDJPY sample defaults to LONG-only) ===
-        ('enable_long_trades', True),
-        ('enable_short_trades', False),
-
-        # === TECHNICAL INDICATORS ===
-        ('ema_fast_length', 14),
-        ('ema_medium_length', 14),
-        ('ema_slow_length', 24),
-        ('ema_confirm_length', 1),
-        ('ema_filter_price_length', 70),
-        ('ema_exit_length', 25),
-        ('atr_length', 10),
-
-        # === LONG ATR VOLATILITY FILTER (JPY-pair scale) ===
-        ('long_use_atr_filter', False),
-        ('long_atr_min_threshold', 0.0450),
-        ('long_atr_max_threshold', 0.1000),
-        ('long_use_atr_increment_filter', False),
-        ('long_atr_increment_min_threshold', 0.0020),
-        ('long_atr_increment_max_threshold', 1.0),
-        ('long_use_atr_decrement_filter', False),
-        ('long_atr_decrement_min_threshold', -0.0150),
-        ('long_atr_decrement_max_threshold', -0.0050),
-
-        # === SHORT ATR VOLATILITY FILTER (kept for optional future SHORT enablement) ===
-        ('short_use_atr_filter', True),
-        ('short_atr_min_threshold', 0.0),
-        ('short_atr_max_threshold', 1.0),
-        ('short_use_atr_increment_filter', False),
-        ('short_atr_increment_min_threshold', 0.0),
-        ('short_atr_increment_max_threshold', 1.0),
-        ('short_use_atr_decrement_filter', False),
-        ('short_atr_decrement_min_threshold', -1.0),
-        ('short_atr_decrement_max_threshold', 0.0),
-
-        # === ENTRY FILTERS ===
-        ('long_use_ema_order_condition', False),
-        ('long_use_price_filter_ema', True),
-        ('long_use_candle_direction_filter', False),
-        ('long_use_angle_filter', True),
-        ('long_min_angle', 30.0),
-        ('long_max_angle', 95.0),
-        ('long_angle_scale_factor', 100.0),
-        ('long_use_ema_below_price_filter', False),
-
-        ('short_use_ema_order_condition', True),
-        ('short_use_price_filter_ema', True),
-        ('short_use_candle_direction_filter', True),
-        ('short_use_angle_filter', True),
-        ('short_min_angle', -90.0),
-        ('short_max_angle', -20.0),
-        ('short_angle_scale_factor', 100.0),
-        ('short_use_ema_above_price_filter', False),
-
-        # === RISK MANAGEMENT ===
-        ('long_atr_sl_multiplier', 3.5),
-        ('long_atr_tp_multiplier', 6.5),
-        ('short_atr_sl_multiplier', 2.5),
-        ('short_atr_tp_multiplier', 7.0),
-
-        # === PULLBACK / VOLATILITY EXPANSION ENTRY ===
-        ('long_use_pullback_entry', True),
-        ('short_use_pullback_entry', True),
-        ('long_pullback_max_candles', 2),
-        ('short_pullback_max_candles', 2),
-        ('long_entry_window_periods', 7),
-        ('short_entry_window_periods', 7),
-        ('use_window_time_offset', True),
-        ('window_offset_multiplier', 2.0),
-        ('window_price_offset_multiplier', 0.01),
-
-        # === TIME FILTER ===
-        ('use_time_range_filter', False),
-        ('entry_start_hour', 0),
-        ('entry_start_minute', 0),
-        ('entry_end_hour', 23),
-        ('entry_end_minute', 59),
-
-        # === REPORTING / DEBUG ===
-        ('verbose_debug', False),
-        ('export_trade_reports', True),
+    params = dict(
+        instrument_name='USDJPY',
+        forex_base_currency='USD',
+        forex_quote_currency='JPY',
+        forex_pip_value=0.01,
+        forex_pip_decimal_places=3,
+        contract_size=100000,
+        forex_spread_pips=1.0,
+        forex_margin_required=2.0,
+        forex_jpy_rate=152.0,
     )
 
 
