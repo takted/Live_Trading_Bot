@@ -237,6 +237,7 @@ class ITradingStrategy(bt.Strategy):
         size=1,
         enable_risk_sizing=True,
         risk_percent=0.01,
+        max_position_size_fraction=None,
         long_atr_sl_multiplier=4.4,
         long_atr_tp_multiplier=6.8,
         short_atr_sl_multiplier=2.5,
@@ -246,6 +247,7 @@ class ITradingStrategy(bt.Strategy):
         long_use_ema_order_condition=False,
         long_use_price_filter_ema=True,
         long_use_candle_direction_filter=True,
+        long_allow_continuation_entry=False,
         long_use_ema_below_price_filter=False,
         long_use_angle_filter=True,
         long_min_angle=0.0,
@@ -256,6 +258,7 @@ class ITradingStrategy(bt.Strategy):
         short_use_ema_order_condition=False,
         short_use_price_filter_ema=True,
         short_use_candle_direction_filter=True,
+        short_allow_continuation_entry=False,
         short_use_ema_above_price_filter=False,
         short_use_angle_filter=True,
         short_min_angle=-90.0,
@@ -611,8 +614,17 @@ class ITradingStrategy(bt.Strategy):
         # 1. Define minimum exchange units for the configured forex instrument.
         min_exchange_units = max(int(getattr(self.p, 'min_exchange_units', 2500) or 0), 1)
 
-        # 2. Calculate maximum units allowed by the total cash limit (MAX_POSITION_SIZE)
-        max_position_value_account = config.MAX_POSITION_SIZE * account_equity
+        # 2. Calculate maximum units allowed by the total cash limit.
+        #    Allow strategy params to override the hard-coded config cap when needed.
+        max_position_size_fraction = getattr(self.p, 'max_position_size_fraction', None)
+        if max_position_size_fraction in (None, ''):
+            max_position_size_fraction = config.MAX_POSITION_SIZE
+        else:
+            max_position_size_fraction = float(max_position_size_fraction)
+        if max_position_size_fraction <= 0:
+            max_position_size_fraction = config.MAX_POSITION_SIZE
+
+        max_position_value_account = max_position_size_fraction * account_equity
         unit_value_in_account = self._get_base_unit_value_in_account_currency(entry_price)
         if unit_value_in_account > 0:
             max_units_by_value = int(max_position_value_account / unit_value_in_account)
@@ -641,7 +653,11 @@ class ITradingStrategy(bt.Strategy):
                 print(f"DEBUG_POSITION_SIZE: Risk-based size ({units}) is below exchange minimum ({min_exchange_units}). Adjusting to minimum.")
                 units = min_exchange_units
         else:
-            print(f"DEBUG_POSITION_SIZE: Trade blocked. Not enough capital to meet minimum exchange size of {min_exchange_units}. Max affordable is {max_units_by_value}.")
+            print(
+                f"DEBUG_POSITION_SIZE: Trade blocked. Not enough capital to meet minimum exchange size of {min_exchange_units}. "
+                f"Max affordable is {max_units_by_value}. "
+                f"Exposure cap fraction={max_position_size_fraction:.3f}, equity={account_equity:.2f}, "
+                f"unit_value={unit_value_in_account:.5f}")
             return 0.0, 0, 0.0, 0.0, 0.0
 
         # Final check to ensure we don't exceed the absolute max allowed by value
@@ -1215,11 +1231,20 @@ class ITradingStrategy(bt.Strategy):
             except IndexError:
                 prev_bull = False
 
+            confirm_above_all = (
+                self.ema_confirm[0] > self.ema_fast[0] and
+                self.ema_confirm[0] > self.ema_medium[0] and
+                self.ema_confirm[0] > self.ema_slow[0]
+            )
+
             # EMA crossover check (ANY of the three) - ABOVE for LONG
             cross_fast = self._cross_above(self.ema_confirm, self.ema_fast)
             cross_medium = self._cross_above(self.ema_confirm, self.ema_medium)
             cross_slow = self._cross_above(self.ema_confirm, self.ema_slow)
             cross_any = cross_fast or cross_medium or cross_slow
+            continuation_ready = bool(self.p.long_allow_continuation_entry and confirm_above_all and not cross_any)
+            phase1_trigger_ready = cross_any or continuation_ready
+            trigger_mode = 'CROSS' if cross_any else ('CONTINUATION' if continuation_ready else 'NONE')
 
             # Check candle direction filter (optional)
             candle_direction_ok = True
@@ -1228,17 +1253,13 @@ class ITradingStrategy(bt.Strategy):
 
             signal_valid = False
 
-            if candle_direction_ok and cross_any:
+            if candle_direction_ok and phase1_trigger_ready:
                 # Apply additional filters
                 signal_valid = True
 
                 # EMA order condition (LONG: confirm > others)
                 if self.p.long_use_ema_order_condition:
-                    ema_order_ok = (
-                        self.ema_confirm[0] > self.ema_fast[0] and
-                        self.ema_confirm[0] > self.ema_medium[0] and
-                        self.ema_confirm[0] > self.ema_slow[0]
-                    )
+                    ema_order_ok = confirm_above_all
                     if not ema_order_ok:
                         signal_valid = False
 
@@ -1277,6 +1298,7 @@ class ITradingStrategy(bt.Strategy):
                     self.signal_detection_atr = current_atr
                     self._lifecycle_debug(
                         f"phase1 LONG pass | cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow}) "
+                        f"| continuation_ready={continuation_ready} trigger_mode={trigger_mode} "
                         f"| prev_bull={prev_bull} | atr={current_atr:.6f}")
                     return 'LONG'
             elif self.p.live_trading:
@@ -1312,11 +1334,12 @@ class ITradingStrategy(bt.Strategy):
                 _candle_bull = (_candle_diff > 0) if not math.isnan(_candle_diff) else None
                 self._lifecycle_debug(
                     f"phase1 LONG blocked | candle_ok={candle_direction_ok} prev_bull={prev_bull} "
-                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow})\n"
+                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow}) "
+                    f"| continuation_ready={continuation_ready} enabled={self.p.long_allow_continuation_entry}\n"
                     f"  ↳ [EMA CURR] confirm={_ec0:.5f}  fast={_ef0:.5f}  med={_em0:.5f}  slow={_es0:.5f}\n"
                     f"  ↳ [EMA PREV] confirm={_ec1:.5f}  fast={_ef1:.5f}  med={_em1:.5f}  slow={_es1:.5f}\n"
                     f"  ↳ [CROSS GAP] conf-fast={_ec0 - _ef0:+.5f}  conf-med={_ec0 - _em0:+.5f}  conf-slow={_ec0 - _es0:+.5f}  "
-                    f"(+ve=confirm above EMA; crossover needs: curr>0 AND prev≤0)\n"
+                    f"(+ve=confirm above EMA; crossover needs: curr>0 AND prev≤0; continuation needs confirm above all EMAs)\n"
                     f"  ↳ [PREV CANDLE] close={_p_close:.5f}  open={_p_open:.5f}  diff={_candle_diff:+.5f}  "
                     f"({'BULL ✅' if _candle_bull else 'BEAR ❌'})  "
                     f"[candle_filter={'ON → requires BULL to gate-pass' if self.p.long_use_candle_direction_filter else 'OFF → no candle requirement'}]\n"
@@ -1328,7 +1351,7 @@ class ITradingStrategy(bt.Strategy):
                     f"close={_price_curr:.5f} vs filter_ema={_filter_ema_val:.5f} {'✅' if _price_above else '❌'}"
                 )
 
-            if self.p.live_trading and candle_direction_ok and cross_any and not signal_valid:
+            if self.p.live_trading and candle_direction_ok and phase1_trigger_ready and not signal_valid:
                 # === PHASE1 LONG SECONDARY FILTER DIAGNOSTIC (gate passed, filters blocked) ===
                 _angle_val = self._angle()
                 _atr_val = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
@@ -1336,7 +1359,7 @@ class ITradingStrategy(bt.Strategy):
                 _ef0 = float(self.ema_fast[0])
                 _em0 = float(self.ema_medium[0])
                 _es0 = float(self.ema_slow[0])
-                _ema_order_ok = _ec0 > _ef0 and _ec0 > _em0 and _ec0 > _es0
+                _ema_order_ok = confirm_above_all
                 try:
                     _price_curr = float(self.data.close[0])
                     _filter_ema_val = float(self.ema_filter_price[0])
@@ -1351,7 +1374,7 @@ class ITradingStrategy(bt.Strategy):
                 _angle_ok = self.p.long_min_angle <= _angle_val <= self.p.long_max_angle
                 _atr_ok = self.p.long_atr_min_threshold <= _atr_val <= self.p.long_atr_max_threshold
                 self._lifecycle_debug(
-                    f"phase1 LONG gate-pass → secondary filters blocked:\n"
+                    f"phase1 LONG gate-pass ({trigger_mode}) → secondary filters blocked:\n"
                     f"  ↳ [EMA ORDER] enabled={self.p.long_use_ema_order_condition} "
                     f"confirm={_ec0:.5f} > fast={_ef0:.5f}|med={_em0:.5f}|slow={_es0:.5f} → {'✅' if _ema_order_ok else '❌'}\n"
                     f"  ↳ [PRICE FILTER] enabled={self.p.long_use_price_filter_ema} "
@@ -1372,11 +1395,20 @@ class ITradingStrategy(bt.Strategy):
             except IndexError:
                 prev_bear = False
 
+            confirm_below_all = (
+                self.ema_confirm[0] < self.ema_fast[0] and
+                self.ema_confirm[0] < self.ema_medium[0] and
+                self.ema_confirm[0] < self.ema_slow[0]
+            )
+
             # EMA crossover check (ANY of the three) - BELOW for SHORT
             cross_fast = self._cross_below(self.ema_confirm, self.ema_fast)
             cross_medium = self._cross_below(self.ema_confirm, self.ema_medium)
             cross_slow = self._cross_below(self.ema_confirm, self.ema_slow)
             cross_any = cross_fast or cross_medium or cross_slow
+            continuation_ready = bool(self.p.short_allow_continuation_entry and confirm_below_all and not cross_any)
+            phase1_trigger_ready = cross_any or continuation_ready
+            trigger_mode = 'CROSS' if cross_any else ('CONTINUATION' if continuation_ready else 'NONE')
 
             # Check candle direction filter (optional)
             candle_direction_ok = True
@@ -1385,17 +1417,13 @@ class ITradingStrategy(bt.Strategy):
 
             signal_valid = False
 
-            if candle_direction_ok and cross_any:
+            if candle_direction_ok and phase1_trigger_ready:
                 # Apply additional filters
                 signal_valid = True
 
                 # EMA order condition (SHORT: confirm < others)
                 if self.p.short_use_ema_order_condition:
-                    ema_order_ok = (
-                        self.ema_confirm[0] < self.ema_fast[0] and
-                        self.ema_confirm[0] < self.ema_medium[0] and
-                        self.ema_confirm[0] < self.ema_slow[0]
-                    )
+                    ema_order_ok = confirm_below_all
                     if not ema_order_ok:
                         signal_valid = False
 
@@ -1434,6 +1462,7 @@ class ITradingStrategy(bt.Strategy):
                     self.signal_detection_atr = current_atr
                     self._lifecycle_debug(
                         f"phase1 SHORT pass | cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow}) "
+                        f"| continuation_ready={continuation_ready} trigger_mode={trigger_mode} "
                         f"| prev_bear={prev_bear} | atr={current_atr:.6f}")
                     return 'SHORT'
             elif self.p.live_trading:
@@ -1469,11 +1498,12 @@ class ITradingStrategy(bt.Strategy):
                 _candle_bear = (_candle_diff < 0) if not math.isnan(_candle_diff) else None
                 self._lifecycle_debug(
                     f"phase1 SHORT blocked | candle_ok={candle_direction_ok} prev_bear={prev_bear} "
-                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow})\n"
+                    f"| cross_any={cross_any} (fast={cross_fast} med={cross_medium} slow={cross_slow}) "
+                    f"| continuation_ready={continuation_ready} enabled={self.p.short_allow_continuation_entry}\n"
                     f"  ↳ [EMA CURR] confirm={_ec0:.5f}  fast={_ef0:.5f}  med={_em0:.5f}  slow={_es0:.5f}\n"
                     f"  ↳ [EMA PREV] confirm={_ec1:.5f}  fast={_ef1:.5f}  med={_em1:.5f}  slow={_es1:.5f}\n"
                     f"  ↳ [CROSS GAP] conf-fast={_ec0 - _ef0:+.5f}  conf-med={_ec0 - _em0:+.5f}  conf-slow={_ec0 - _es0:+.5f}  "
-                    f"(-ve=confirm below EMA; crossunder needs: curr<0 AND prev≥0)\n"
+                    f"(-ve=confirm below EMA; crossunder needs: curr<0 AND prev≥0; continuation needs confirm below all EMAs)\n"
                     f"  ↳ [PREV CANDLE] close={_p_close:.5f}  open={_p_open:.5f}  diff={_candle_diff:+.5f}  "
                     f"({'BEAR ✅' if _candle_bear else 'BULL ❌'})  "
                     f"[candle_filter={'ON → requires BEAR to gate-pass' if self.p.short_use_candle_direction_filter else 'OFF → no candle requirement'}]\n"
@@ -1485,7 +1515,7 @@ class ITradingStrategy(bt.Strategy):
                     f"close={_price_curr:.5f} vs filter_ema={_filter_ema_val:.5f} {'✅' if _price_below else '❌'}"
                 )
 
-            if self.p.live_trading and candle_direction_ok and cross_any and not signal_valid:
+            if self.p.live_trading and candle_direction_ok and phase1_trigger_ready and not signal_valid:
                 # === PHASE1 SHORT SECONDARY FILTER DIAGNOSTIC (gate passed, filters blocked) ===
                 _angle_val = self._angle()
                 _atr_val = float(self.atr[0]) if not math.isnan(float(self.atr[0])) else 0.0
@@ -1493,7 +1523,7 @@ class ITradingStrategy(bt.Strategy):
                 _ef0 = float(self.ema_fast[0])
                 _em0 = float(self.ema_medium[0])
                 _es0 = float(self.ema_slow[0])
-                _ema_order_ok = _ec0 < _ef0 and _ec0 < _em0 and _ec0 < _es0
+                _ema_order_ok = confirm_below_all
                 try:
                     _price_curr = float(self.data.close[0])
                     _filter_ema_val = float(self.ema_filter_price[0])
@@ -1508,7 +1538,7 @@ class ITradingStrategy(bt.Strategy):
                 _angle_ok = self.p.short_min_angle <= _angle_val <= self.p.short_max_angle
                 _atr_ok = self.p.short_atr_min_threshold <= _atr_val <= self.p.short_atr_max_threshold
                 self._lifecycle_debug(
-                    f"phase1 SHORT gate-pass → secondary filters blocked:\n"
+                    f"phase1 SHORT gate-pass ({trigger_mode}) → secondary filters blocked:\n"
                     f"  ↳ [EMA ORDER] enabled={self.p.short_use_ema_order_condition} "
                     f"confirm={_ec0:.5f} < fast={_ef0:.5f}|med={_em0:.5f}|slow={_es0:.5f} → {'✅' if _ema_order_ok else '❌'}\n"
                     f"  ↳ [PRICE FILTER] enabled={self.p.short_use_price_filter_ema} "
