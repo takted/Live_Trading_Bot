@@ -4214,6 +4214,19 @@ class ITradingStrategyEURJPY(ITradingStrategy):
         forex_jpy_rate=152.0,
     )
 
+    def _phase2_confirm_pullback(self, armed_direction):
+        """EURJPY-only override: bypass phase2 when *_use_pullback_entry is disabled."""
+        use_pullback = (self.p.long_use_pullback_entry if armed_direction == 'LONG'
+                        else self.p.short_use_pullback_entry)
+        if not use_pullback:
+            self.last_pullback_candle_high = float(self.data.high[0])
+            self.last_pullback_candle_low = float(self.data.low[0])
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} bypass | pullback disabled | "
+                f"high={self.last_pullback_candle_high:.5f} low={self.last_pullback_candle_low:.5f}")
+            return True
+        return super()._phase2_confirm_pullback(armed_direction)
+
 
 class ITradingStrategyUSDCHF(ITradingStrategy):
     params = dict(
