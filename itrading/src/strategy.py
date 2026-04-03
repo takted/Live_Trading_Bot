@@ -195,6 +195,70 @@ using in any live or simulated trading environment.
 """
 
 class ITradingStrategy(bt.Strategy):
+    DEFAULT_INSTRUMENT = 'AUDUSD'
+    FOREX_INSTRUMENT_CONFIGS = {
+        'AUDUSD': {
+            'base_currency': 'AUD',
+            'quote_currency': 'USD',
+            'pip_value': 0.0001,
+            'pip_decimal_places': 5,
+            'lot_size': 100000,
+            'margin_required': 3.33,
+            'typical_spread': 2.2,
+            'price_range': (0.50, 1.50),
+        },
+        'EURUSD': {
+            'base_currency': 'EUR',
+            'quote_currency': 'USD',
+            'pip_value': 0.0001,
+            'pip_decimal_places': 5,
+            'lot_size': 100000,
+            'margin_required': 3.33,
+            'typical_spread': 2.2,
+            'price_range': (0.80, 1.60),
+        },
+        'GBPUSD': {
+            'base_currency': 'GBP',
+            'quote_currency': 'USD',
+            'pip_value': 0.0001,
+            'pip_decimal_places': 5,
+            'lot_size': 100000,
+            'margin_required': 3.33,
+            'typical_spread': 2.2,
+            'price_range': (1.00, 1.50),
+        },
+        'EURJPY': {
+            'base_currency': 'EUR',
+            'quote_currency': 'JPY',
+            'pip_value': 0.01,
+            'pip_decimal_places': 3,
+            'lot_size': 100000,
+            'margin_required': 3.33,
+            'typical_spread': 2.0,
+            'price_range': (100.0, 200.0),
+        },
+        'USDCHF': {
+            'base_currency': 'USD',
+            'quote_currency': 'CHF',
+            'pip_value': 0.0001,
+            'pip_decimal_places': 5,
+            'lot_size': 100000,
+            'margin_required': 3.33,
+            'typical_spread': 2.2,
+            'price_range': (0.80, 1.20),
+        },
+        'USDJPY': {
+            'base_currency': 'USD',
+            'quote_currency': 'JPY',
+            'pip_value': 0.01,
+            'pip_decimal_places': 3,
+            'lot_size': 100000,
+            'margin_required': 2.0,
+            'typical_spread': 1.0,
+            'price_range': (100.0, 200.0),
+        },
+    }
+
     params = dict(
         # === LIVE TRADING / SIGNALING ===
         live_trading=False,
@@ -473,10 +537,11 @@ class ITradingStrategy(bt.Strategy):
                 # Calculate pips based on direction and P&L
                 pips = 0.0
                 if entry_price and exit_price:
+                    pip_value = float(getattr(self.p, 'forex_pip_value', 0.0001) or 0.0001)
                     if direction == 'LONG':
-                        pips = (exit_price - entry_price) / 0.0001  # Forex pip calculation
+                        pips = (exit_price - entry_price) / pip_value
                     else:  # SHORT
-                        pips = (entry_price - exit_price) / 0.0001  # Forex pip calculation
+                        pips = (entry_price - exit_price) / pip_value
 
                 # Update trade record with exit info (add pips back)
                 last_trade.update({
@@ -782,18 +847,9 @@ class ITradingStrategy(bt.Strategy):
                 f"Account Leverage: {self.p.account_leverage:.0f}:1 | Account: {self.p.account_currency}")
 
     def _validate_forex_setup(self):
-        """Validate forex configuration for the configured instrument.
-
-        Returns:
-            bool: True if configuration appears consistent.
-        """
-        if not self.p.use_forex_position_calc:
-            return True
-
-        instrument = (self.p.instrument_name or 'AUDUSD').upper()
+        instrument = self._normalized_instrument_name()
         cfg = self._get_forex_instrument_config(instrument)
-        price_range = cfg.get('price_range', (0.50, 1.50))
-
+        price_range = cfg.get('price_range', (0.0, float('inf')))
         # Warn if data filename does not match the configured instrument
         data_filename = getattr(self, '_data_filename', '')
         if isinstance(data_filename, str) and data_filename and instrument not in data_filename.upper():
@@ -816,80 +872,22 @@ class ITradingStrategy(bt.Strategy):
 
         Args:
             instrument_name: Instrument symbol (e.g. 'AUDUSD', 'EURUSD').
-                             Defaults to self.p.instrument_name or 'AUDUSD'.
+                             Defaults to self.p.instrument_name or DEFAULT_INSTRUMENT.
 
         Returns:
             dict: Configuration dictionary for the given instrument.
         """
-        if instrument_name is None or instrument_name == 'AUTO':
-            instrument_name = self.p.instrument_name or 'AUDUSD'
+        instrument_name = self._normalized_instrument_name(instrument_name)
+        config = self.FOREX_INSTRUMENT_CONFIGS.get(instrument_name)
+        if config is not None:
+            return config
 
-        configs = {
-            'AUDUSD': {
-                'base_currency': 'AUD',
-                'quote_currency': 'USD',
-                'pip_value': 0.0001,
-                'pip_decimal_places': 5,
-                'lot_size': 100000,
-                'margin_required': 3.33,
-                'typical_spread': 2.2,
-                'price_range': (0.50, 1.50),
-            },
-            'EURUSD': {
-                'base_currency': 'EUR',
-                'quote_currency': 'USD',
-                'pip_value': 0.0001,
-                'pip_decimal_places': 4,
-                'lot_size': 100000,
-                'margin_required': 3.33,
-                'typical_spread': 2.2,
-                'price_range': (0.80, 1.60),
-            },
-            'GBPUSD': {
-                'base_currency': 'GBP',
-                'quote_currency': 'USD',
-                'pip_value': 0.0001,
-                'pip_decimal_places': 4,
-                'lot_size': 100000,
-                'margin_required': 3.33,
-                'typical_spread': 2.2,
-                'price_range': (1.00, 1.50),
-            },
-            'EURJPY': {
-                'base_currency': 'EUR',
-                'quote_currency': 'JPY',
-                'pip_value': 0.01,
-                'pip_decimal_places': 3,
-                'lot_size': 100000,
-                'margin_required': 3.33,
-                'typical_spread': 2.0,
-                'price_range': (100.0, 200.0),
-            },
-            'USDCHF': {
-                'base_currency': 'USD',
-                'quote_currency': 'CHF',
-                'pip_value': 0.0001,
-                'pip_decimal_places': 4,
-                'lot_size': 100000,
-                'margin_required': 3.33,
-                'typical_spread': 2.2,
-                'price_range': (0.80, 1.20),
-            },
-            'USDJPY': {
-                'base_currency': 'USD',
-                'quote_currency': 'JPY',
-                'pip_value': 0.01,
-                'pip_decimal_places': 3,
-                'lot_size': 100000,
-                'margin_required': 2.0,
-                'typical_spread': 1.0,
-                'price_range': (100.0, 200.0),
-            },
-        }
-        return configs.get(instrument_name, configs['AUDUSD'])
+        # Safe fallback: preserve current runtime params instead of forcing AUDUSD defaults.
+        print(f"WARNING: Unknown instrument '{instrument_name}'. Using runtime forex params as fallback.")
+        return self._get_forex_config_from_params()
 
     def _apply_forex_config(self):
-        """Apply forex configuration for USDCHF."""
+        """Apply forex configuration for the active instrument."""
         if not self.p.use_forex_position_calc:
             return
 
@@ -2848,26 +2846,6 @@ class ITradingStrategy(bt.Strategy):
 
         return False
 
-    def _is_in_trading_time_range(self, dt):
-        """Check if current time is within allowed trading hours (UTC)"""
-        if not self.p.use_time_range_filter:
-            return True
-
-        current_hour = dt.hour
-        current_minute = dt.minute
-
-        # Convert to total minutes for easier comparison
-        current_time_minutes = current_hour * 60 + current_minute
-        start_time_minutes = self.p.entry_start_hour * 60 + self.p.entry_start_minute
-        end_time_minutes = self.p.entry_end_hour * 60 + self.p.entry_end_minute
-
-        # Check if current time is within the allowed range
-        if start_time_minutes <= end_time_minutes:
-            # Normal case: start time is before end time (same day)
-            return start_time_minutes <= current_time_minutes <= end_time_minutes
-        else:
-            # Edge case: range crosses midnight (e.g., 22:00 to 06:00)
-            return current_time_minutes >= start_time_minutes or current_time_minutes <= end_time_minutes
 
     def _basic_entry_conditions(self):
         """Check basic entry conditions 1 & 2 for pullback system"""
@@ -4149,6 +4127,26 @@ class ITradingStrategy(bt.Strategy):
             self._tagged_print('DEBUG', f"Error cancelling orders: {e}")
 
 
+    def _normalized_instrument_name(self, instrument_name=None):
+        """Return normalized instrument symbol used by config lookups."""
+        raw = instrument_name
+        if raw is None or raw == 'AUTO':
+            raw = getattr(self.p, 'instrument_name', None)
+        return str(raw or self.DEFAULT_INSTRUMENT).strip().upper()
+
+    def _get_forex_config_from_params(self):
+        """Build a forex config from active strategy params as a safe fallback."""
+        return {
+            'base_currency': getattr(self.p, 'forex_base_currency', 'USD'),
+            'quote_currency': getattr(self.p, 'forex_quote_currency', 'USD'),
+            'pip_value': float(getattr(self.p, 'forex_pip_value', 0.0001)),
+            'pip_decimal_places': int(getattr(self.p, 'forex_pip_decimal_places', 5)),
+            'lot_size': int(getattr(self.p, 'contract_size', 100000)),
+            'margin_required': float(getattr(self.p, 'forex_margin_required', 3.33)),
+            'typical_spread': float(getattr(self.p, 'forex_spread_pips', 2.0)),
+            'price_range': (0.0, float('inf')),
+        }
+
 class ITradingStrategyAUDUSD(ITradingStrategy):
     params = dict(
         instrument_name='AUDUSD',
@@ -4173,6 +4171,64 @@ class ITradingStrategyEURUSD(ITradingStrategy):
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
     )
+
+    # Minimum candle body (in price units) to be considered directional.
+    # Anything smaller is treated as a doji (neutral) during pullback phase.
+    _DOJI_BODY_THRESHOLD = 0.00001  # 0.1 pip for EURUSD (5 dp)
+
+    def _phase2_confirm_pullback(self, armed_direction):
+        """EURUSD override: bypass phase2 when pullback entry is disabled, treat doji/flat
+        candles as neutral, and treat same-direction continuation candles as neutral too.
+
+        Priority (evaluated in order):
+        1. If *_use_pullback_entry is disabled → bypass phase2 immediately (same pattern
+           as GBPUSD / EURJPY), capturing high/low for the breakout channel.
+        2. Doji (|close - open| < _DOJI_BODY_THRESHOLD) → neutral: keep ARMED, wait.
+        3. Continuation candle (same direction as signal: bearish for SHORT, bullish for
+           LONG) → neutral: price is still moving with the signal; stay ARMED and wait
+           for the counter-move pullback candle.  Do NOT invalidate.
+        4. Genuine pullback candle → delegate to base-class counter/completer logic.
+        """
+        use_pullback = (self.p.long_use_pullback_entry if armed_direction == 'LONG'
+                        else self.p.short_use_pullback_entry)
+        if not use_pullback:
+            self.last_pullback_candle_high = float(self.data.high[0])
+            self.last_pullback_candle_low = float(self.data.low[0])
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} bypass | pullback disabled | "
+                f"high={self.last_pullback_candle_high:.5f} low={self.last_pullback_candle_low:.5f}")
+            return True
+
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        candle_body = abs(current_close - current_open)
+
+        # Doji: neither pullback nor continuation – wait
+        if candle_body < self._DOJI_BODY_THRESHOLD:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} doji-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} < threshold={self._DOJI_BODY_THRESHOLD:.5f} | "
+                f"pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False  # Keep ARMED; wait for a directional candle
+
+        # Continuation candle (same direction as signal): stay ARMED, don't invalidate.
+        # SHORT continuation = bearish (close < open); LONG continuation = bullish (close > open)
+        is_continuation = (
+            (armed_direction == 'SHORT' and current_close < current_open) or
+            (armed_direction == 'LONG' and current_close > current_open)
+        )
+        if is_continuation:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} continuation-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} | pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False  # Keep ARMED; price still moving with signal, await pullback
+
+        # Genuine pullback candle – delegate to base-class counter/completer
+        return super()._phase2_confirm_pullback(armed_direction)
 
 
 class ITradingStrategyGBPUSD(ITradingStrategy):
