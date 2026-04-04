@@ -4294,7 +4294,63 @@ class ITradingStrategyUSDCHF(ITradingStrategy):
         contract_size=100000,
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
+        # USDCHF tuning defaults (instrument-scoped): allow trend continuation,
+        # relax ATR floor slightly, and widen upper angle cap to reduce false blocks.
+        long_allow_continuation_entry=True,
+        long_atr_min_threshold=0.00017,
+        long_max_angle=85.0,
     )
+
+    def _phase2_confirm_pullback(self, armed_direction):
+        """USDCHF override: keep ARMED during continuation/doji candles in phase2.
+
+        When continuation entries are enabled, a same-direction candle after arming is
+        treated as neutral (wait), not as a hard invalidation. This keeps phase2 aligned
+        with phase1 continuation behavior while remaining instrument-scoped.
+        """
+        use_pullback = (self.p.long_use_pullback_entry if armed_direction == 'LONG'
+                        else self.p.short_use_pullback_entry)
+        if not use_pullback:
+            self.last_pullback_candle_high = float(self.data.high[0])
+            self.last_pullback_candle_low = float(self.data.low[0])
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} bypass | pullback disabled | "
+                f"high={self.last_pullback_candle_high:.5f} low={self.last_pullback_candle_low:.5f}")
+            return True
+
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        candle_body = abs(current_close - current_open)
+
+        # Treat tiny/flat candles as neutral noise during pullback phase.
+        if candle_body < 0.00001:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} doji-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} < threshold=0.00001 | "
+                f"pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        long_continuation = (
+            armed_direction == 'LONG' and
+            bool(self.p.long_allow_continuation_entry) and
+            current_close > current_open
+        )
+        short_continuation = (
+            armed_direction == 'SHORT' and
+            bool(self.p.short_allow_continuation_entry) and
+            current_close < current_open
+        )
+        if long_continuation or short_continuation:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} continuation-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} | pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        return super()._phase2_confirm_pullback(armed_direction)
 
 
 class ITradingStrategyUSDJPY(ITradingStrategy):
