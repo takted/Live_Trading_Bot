@@ -3165,6 +3165,10 @@ class ITradingStrategy(bt.Strategy):
         elif self.pullback_state == "WAITING_BREAKOUT":
             # Check if entry window expired
             bars_in_window = current_bar - self.entry_window_start
+            # SAFETY CHECK: If bars_in_window is unreasonably high, reset state
+            if bars_in_window > 50:  # Safety limit - should never exceed this
+                self._reset_pullback_state()
+                return False
             if bars_in_window >= self.p.long_entry_window_periods:
                 self._reset_pullback_state()
                 return False
@@ -4371,9 +4375,9 @@ class ITradingStrategyUSDJPY(ITradingStrategy):
         enable_short_trades=True,
 
         # ATR Filters - adjusted for JPY pairs' typical volatility
-        long_atr_min_threshold=0.045,
+        long_atr_min_threshold=0.025,
         long_atr_max_threshold=0.100,
-        short_atr_min_threshold=0.045,
+        short_atr_min_threshold=0.025,
         short_atr_max_threshold=0.100,
 
         # Angle Filters - relaxed to avoid blocking on minor pullbacks
@@ -4381,6 +4385,10 @@ class ITradingStrategyUSDJPY(ITradingStrategy):
         long_max_angle=85.0,
         short_min_angle=-85.0,
         short_max_angle=0.0,
+        
+        # Candle Direction Filter - disabled for more signal opportunities
+        long_use_candle_direction_filter=False,
+        short_use_candle_direction_filter=False,
     )
 
     # Minimum candle body (in price units) to be considered directional.

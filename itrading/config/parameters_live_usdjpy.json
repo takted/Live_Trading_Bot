@@ -20,6 +20,7 @@
     "enable_long_trades": true,
     "enable_short_trades": false,
     "long_use_pullback_entry": true,
+    "long_allow_continuation_entry": true,
     "short_use_pullback_entry": true,
     "ema_fast_length": 14,
     "ema_medium_length": 14,
