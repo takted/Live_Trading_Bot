@@ -686,7 +686,11 @@ class ITradingStrategy(bt.Strategy):
         if max_position_size_fraction in (None, ''):
             max_position_size_fraction = config.MAX_POSITION_SIZE
         else:
-            max_position_size_fraction = float(max_position_size_fraction)
+            try:
+                max_position_size_fraction = float(max_position_size_fraction)
+            except (ValueError, TypeError):
+                max_position_size_fraction = config.MAX_POSITION_SIZE
+
         if max_position_size_fraction <= 0:
             max_position_size_fraction = config.MAX_POSITION_SIZE
 
@@ -3161,10 +3165,6 @@ class ITradingStrategy(bt.Strategy):
         elif self.pullback_state == "WAITING_BREAKOUT":
             # Check if entry window expired
             bars_in_window = current_bar - self.entry_window_start
-            # SAFETY CHECK: If bars_in_window is unreasonably high, reset state
-            if bars_in_window > 50:  # Safety limit - should never exceed this
-                self._reset_pullback_state()
-                return False
             if bars_in_window >= self.p.long_entry_window_periods:
                 self._reset_pullback_state()
                 return False
@@ -4364,6 +4364,68 @@ class ITradingStrategyUSDJPY(ITradingStrategy):
         forex_spread_pips=1.0,
         forex_margin_required=2.0,
         forex_jpy_rate=152.0,
+
+        # USDJPY specific tuning parameters
+        max_position_size_fraction=1.0,  # Increase exposure to allow trades with small equity
+        enable_long_trades=True,
+        enable_short_trades=True,
+
+        # ATR Filters - adjusted for JPY pairs' typical volatility
+        long_atr_min_threshold=0.045,
+        long_atr_max_threshold=0.100,
+        short_atr_min_threshold=0.045,
+        short_atr_max_threshold=0.100,
+
+        # Angle Filters - relaxed to avoid blocking on minor pullbacks
+        long_min_angle=0.0,
+        long_max_angle=85.0,
+        short_min_angle=-85.0,
+        short_max_angle=0.0,
     )
 
+    # Minimum candle body (in price units) to be considered directional.
+    _DOJI_BODY_THRESHOLD = 0.001  # 0.1 pip for USDJPY (3 dp)
 
+    def _phase2_confirm_pullback(self, armed_direction):
+        """USDJPY override: treat doji/flat candles as neutral, and treat same-direction
+        continuation candles as neutral too.
+        """
+        use_pullback = (self.p.long_use_pullback_entry if armed_direction == 'LONG'
+                        else self.p.short_use_pullback_entry)
+        if not use_pullback:
+            self.last_pullback_candle_high = float(self.data.high[0])
+            self.last_pullback_candle_low = float(self.data.low[0])
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} bypass | pullback disabled | "
+                f"high={self.last_pullback_candle_high:.3f} low={self.last_pullback_candle_low:.3f}")
+            return True
+
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        candle_body = abs(current_close - current_open)
+
+        # Doji: neither pullback nor continuation – wait
+        if candle_body < self._DOJI_BODY_THRESHOLD:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} doji-neutral | "
+                f"close={current_close:.3f} open={current_open:.3f} "
+                f"body={candle_body:.3f} < threshold={self._DOJI_BODY_THRESHOLD:.3f} | "
+                f"pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False  # Keep ARMED; wait for a directional candle
+
+        # Continuation candle (same direction as signal): stay ARMED, don't invalidate.
+        is_continuation = (
+            (armed_direction == 'SHORT' and current_close < current_open) or
+            (armed_direction == 'LONG' and current_close > current_open)
+        )
+        if is_continuation:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} continuation-neutral | "
+                f"close={current_close:.3f} open={current_open:.3f} "
+                f"body={candle_body:.3f} | pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False  # Keep ARMED; price still moving with signal, await pullback
+
+        # Genuine pullback candle – delegate to base-class counter/completer
+        return super()._phase2_confirm_pullback(armed_direction)
