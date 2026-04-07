@@ -257,6 +257,46 @@ class ITradingStrategy(bt.Strategy):
             'typical_spread': 1.0,
             'price_range': (100.0, 200.0),
         },
+        'USDCAD': {
+            'base_currency': 'USD',
+            'quote_currency': 'CAD',
+            'pip_value': 0.0001,
+            'pip_decimal_places': 5,
+            'lot_size': 100000,
+            'margin_required': 3.33,
+            'typical_spread': 2.2,
+            'price_range': (1.10, 1.50),
+        },
+        'NZDUSD': {
+            'base_currency': 'NZD',
+            'quote_currency': 'USD',
+            'pip_value': 0.0001,
+            'pip_decimal_places': 5,
+            'lot_size': 100000,
+            'margin_required': 3.33,
+            'typical_spread': 2.2,
+            'price_range': (0.50, 1.10),
+        },
+        'GBPJPY': {
+            'base_currency': 'GBP',
+            'quote_currency': 'JPY',
+            'pip_value': 0.01,
+            'pip_decimal_places': 3,
+            'lot_size': 100000,
+            'margin_required': 3.33,
+            'typical_spread': 2.0,
+            'price_range': (120.0, 220.0),
+        },
+        'EURGBP': {
+            'base_currency': 'EUR',
+            'quote_currency': 'GBP',
+            'pip_value': 0.0001,
+            'pip_decimal_places': 5,
+            'lot_size': 100000,
+            'margin_required': 3.33,
+            'typical_spread': 2.2,
+            'price_range': (0.70, 1.00),
+        },
     }
 
     params = dict(
@@ -3894,7 +3934,69 @@ class ITradingStrategy(bt.Strategy):
             if usdjpy > 0:
                 return 1.0 / usdjpy
 
+        # For non-USD quote crosses (for example EURGBP), use explicit quote->account
+        # conversion when account currency is USD.
+        account_currency = str(getattr(self.p, 'account_currency', '') or '').upper()
+        if account_currency == 'USD':
+            try:
+                explicit_rate = float(getattr(self.p, 'forex_quote_to_account_rate', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                explicit_rate = 0.0
+            if explicit_rate > 0:
+                return explicit_rate
+
         return None
+
+    def _base_to_usd_rate(self, current_price):
+        """Return conversion rate from instrument base currency to USD when derivable."""
+        base, quote, _ = self._instrument_pair()
+
+        if base == 'USD':
+            return 1.0
+
+        if quote == 'USD' and current_price > 0:
+            return float(current_price)
+
+        # For XXXJPY pairs, approximate base->USD using configured USDJPY.
+        if quote == 'JPY' and current_price > 0:
+            try:
+                usdjpy = float(getattr(self.p, 'forex_jpy_rate', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                usdjpy = 0.0
+            if usdjpy > 0:
+                return float(current_price) / usdjpy
+
+        # For non-USD quote crosses, derive base->USD from price * quote->USD.
+        quote_to_usd = self._quote_to_usd_rate(quote, current_price)
+        if quote_to_usd is not None and current_price > 0:
+            return float(current_price) * quote_to_usd
+
+        return None
+
+    def _compute_instrument_net_liq(self, snapshot=None):
+        """Compute instrument-specific net liquidation value in base and USD."""
+        if snapshot is None:
+            snapshot = self._collect_instrument_broker_positions()
+
+        base, _, pair = self._instrument_pair()
+        current_price = float(self.data.close[0])
+        base_to_usd = self._base_to_usd_rate(current_price)
+
+        nlv_base = snapshot.get('market_value_base_total') if snapshot.get('has_base_valuation') else None
+        nlv_usd = snapshot.get('market_value_usd_total') if snapshot.get('has_usd_valuation') else None
+
+        # Fill missing side when only one valuation exists and conversion is available.
+        if nlv_base is None and nlv_usd is not None and base_to_usd and base_to_usd > 0:
+            nlv_base = nlv_usd / base_to_usd
+        if nlv_usd is None and nlv_base is not None and base_to_usd and base_to_usd > 0:
+            nlv_usd = nlv_base * base_to_usd
+
+        return {
+            'pair': pair,
+            'base_currency': base or 'BASE',
+            'nlv_base': nlv_base,
+            'nlv_usd': nlv_usd,
+        }
 
     def _collect_instrument_broker_positions(self):
         """Collect and value broker positions only for the configured instrument."""
@@ -3904,9 +4006,13 @@ class ITradingStrategy(bt.Strategy):
         snapshot = {
             'pair': pair,
             'positions': [],
+            'market_value_base_total': 0.0,
             'market_value_usd_total': 0.0,
             'cost_basis_usd_total': 0.0,
             'unrealized_pnl_usd_total': 0.0,
+            'base_cash_balance': None,
+            'quote_cash_balance': None,
+            'has_base_valuation': False,
             'has_usd_valuation': False,
         }
 
@@ -3933,8 +4039,16 @@ class ITradingStrategy(bt.Strategy):
             quote_to_usd = self._quote_to_usd_rate(currency, current_price)
 
             market_value_usd = None
+            market_value_base = None
             cost_basis_usd = None
             unrealized_pnl_usd = None
+
+            # For IB CASH forex balances, qty is already base-currency units.
+            if sec_type == 'CASH':
+                market_value_base = qty
+                snapshot['has_base_valuation'] = True
+                snapshot['market_value_base_total'] += market_value_base
+
             if quote_to_usd is not None:
                 market_value_usd = qty * current_price * quote_to_usd
                 cost_basis_usd = qty * avg_cost * quote_to_usd
@@ -3944,18 +4058,79 @@ class ITradingStrategy(bt.Strategy):
                 snapshot['cost_basis_usd_total'] += cost_basis_usd
                 snapshot['unrealized_pnl_usd_total'] += unrealized_pnl_usd
 
+                if market_value_base is None:
+                    base_to_usd = self._base_to_usd_rate(current_price)
+                    if base_to_usd is not None and base_to_usd > 0:
+                        market_value_base = market_value_usd / base_to_usd
+                        snapshot['has_base_valuation'] = True
+                        snapshot['market_value_base_total'] += market_value_base
+
             snapshot['positions'].append({
                 'symbol': symbol,
                 'currency': currency,
                 'sec_type': sec_type,
                 'qty': qty,
                 'avg_cost': avg_cost,
+                'market_value_base': market_value_base,
                 'market_value_usd': market_value_usd,
                 'cost_basis_usd': cost_basis_usd,
                 'unrealized_pnl_usd': unrealized_pnl_usd,
             })
 
+        # Cash-only fallback: if no matched position exists, include base/quote cash balances
+        # for this instrument so NetLiq still reports meaningful values.
+        if not snapshot['positions'] and hasattr(self.p.ib_connection, 'get_cash_balances'):
+            try:
+                cash_balances = self.p.ib_connection.get_cash_balances() or {}
+            except Exception:
+                cash_balances = {}
+
+            if isinstance(cash_balances, dict):
+                base_cash = cash_balances.get(base)
+                quote_cash = cash_balances.get(quote)
+
+                try:
+                    base_cash = float(base_cash) if base_cash is not None else None
+                except (TypeError, ValueError):
+                    base_cash = None
+                try:
+                    quote_cash = float(quote_cash) if quote_cash is not None else None
+                except (TypeError, ValueError):
+                    quote_cash = None
+
+                snapshot['base_cash_balance'] = base_cash
+                snapshot['quote_cash_balance'] = quote_cash
+
+                if base_cash is not None:
+                    snapshot['has_base_valuation'] = True
+                    snapshot['market_value_base_total'] += base_cash
+                    base_to_usd = self._base_to_usd_rate(current_price)
+                    if base_to_usd is not None:
+                        snapshot['has_usd_valuation'] = True
+                        snapshot['market_value_usd_total'] += base_cash * base_to_usd
+
+                if quote_cash is not None:
+                    quote_to_usd = self._quote_to_usd_rate(quote, current_price)
+                    if quote_to_usd is not None:
+                        snapshot['has_usd_valuation'] = True
+                        snapshot['market_value_usd_total'] += quote_cash * quote_to_usd
+
         return snapshot
+
+    def _print_aligned_rows(self, rows, indent='  '):
+        """Print label/value rows in a compact aligned format."""
+        normalized_rows = []
+        for label, value in rows:
+            if label is None:
+                continue
+            normalized_rows.append((str(label), str(value)))
+
+        if not normalized_rows:
+            return
+
+        label_width = max(len(label) for label, _ in normalized_rows)
+        for label, value in normalized_rows:
+            print(f"{indent}{label:<{label_width}} : {value}")
 
     def _print_broker_positions(self, snapshot=None):
         """Print broker positions for the configured instrument only."""
@@ -3988,29 +4163,67 @@ class ITradingStrategy(bt.Strategy):
                 snapshot = self._collect_instrument_broker_positions()
 
             positions = snapshot.get('positions', [])
-            if not positions:
+            has_cash_fallback = (
+                snapshot.get('base_cash_balance') is not None or
+                snapshot.get('quote_cash_balance') is not None
+            )
+            if not positions and not has_cash_fallback:
                 print(f"[DEBUG] No broker positions found for instrument {pair or (base + quote)}")
                 return
 
             print(f"\n=== BROKER POSITIONS ({len(positions)} total for {pair}) ===")
-            for pos in positions:
-                line = (
-                    f"  {pos['symbol']}/{pos['currency']} ({pos['sec_type']}): "
-                    f"Qty={pos['qty']:+,.2f} | AvgCost={pos['avg_cost']:.5f}"
-                )
-                if pos['market_value_usd'] is not None and pos['unrealized_pnl_usd'] is not None:
-                    line += (
-                        f" | MktValue(USD)={pos['market_value_usd']:+,.2f}"
-                        f" | UnrealPnL(USD)={pos['unrealized_pnl_usd']:+,.2f}"
-                    )
-                print(line)
+            for idx, pos in enumerate(positions, start=1):
+                print(f"  [{idx}] {pos['symbol']}/{pos['currency']} ({pos['sec_type']})")
+                position_rows = [
+                    ("Qty", f"{pos['qty']:+,.2f}"),
+                    ("Avg Cost", f"{pos['avg_cost']:.5f}"),
+                ]
+                if pos['market_value_usd'] is not None:
+                    position_rows.append(("Market Value (USD)", f"{pos['market_value_usd']:+,.2f}"))
+                if pos['cost_basis_usd'] is not None:
+                    position_rows.append(("Cost Basis (USD)", f"{pos['cost_basis_usd']:+,.2f}"))
+                if pos['unrealized_pnl_usd'] is not None:
+                    position_rows.append(("Unrealized PnL (USD)", f"{pos['unrealized_pnl_usd']:+,.2f}"))
+                if pos['market_value_base'] is not None:
+                    position_rows.append((f"Market Value ({base})", f"{pos['market_value_base']:+,.2f}"))
+                self._print_aligned_rows(position_rows, indent="      ")
+
+            if has_cash_fallback:
+                print("  Cash Balances (fallback)")
+                cash_rows = []
+                if snapshot.get('base_cash_balance') is not None:
+                    cash_rows.append((f"{base} Cash", f"{snapshot['base_cash_balance']:+,.2f} {base}"))
+                if snapshot.get('quote_cash_balance') is not None:
+                    cash_rows.append((f"{quote} Cash", f"{snapshot['quote_cash_balance']:+,.2f} {quote}"))
+                self._print_aligned_rows(cash_rows, indent="      ")
 
             if snapshot.get('has_usd_valuation'):
-                print(
-                    f"  Totals: MktValue(USD)={snapshot['market_value_usd_total']:+,.2f} "
-                    f"| CostBasis(USD)={snapshot['cost_basis_usd_total']:+,.2f} "
-                    f"| UnrealPnL(USD)={snapshot['unrealized_pnl_usd_total']:+,.2f}"
-                )
+                print("  Totals")
+                self._print_aligned_rows([
+                    ("Market Value (USD)", f"{snapshot['market_value_usd_total']:+,.2f}"),
+                    ("Cost Basis (USD)", f"{snapshot['cost_basis_usd_total']:+,.2f}"),
+                    ("Unrealized PnL (USD)", f"{snapshot['unrealized_pnl_usd_total']:+,.2f}"),
+                ], indent="      ")
+
+            instrument_nlv = self._compute_instrument_net_liq(snapshot)
+            if instrument_nlv['nlv_base'] is not None and instrument_nlv['nlv_usd'] is not None:
+                self._print_aligned_rows([
+                    (
+                        f"Instrument NetLiq ({instrument_nlv['pair']})",
+                        f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']} | {instrument_nlv['nlv_usd']:+,.2f} USD",
+                    )
+                ])
+            elif instrument_nlv['nlv_usd'] is not None:
+                self._print_aligned_rows([
+                    (f"Instrument NetLiq ({instrument_nlv['pair']})", f"{instrument_nlv['nlv_usd']:+,.2f} USD")
+                ])
+            elif instrument_nlv['nlv_base'] is not None:
+                self._print_aligned_rows([
+                    (
+                        f"Instrument NetLiq ({instrument_nlv['pair']})",
+                        f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']}",
+                    )
+                ])
             print("=" * 60)
 
         except AttributeError as e:
@@ -4080,17 +4293,40 @@ class ITradingStrategy(bt.Strategy):
             adjusted_final_value = final_value + broker_snapshot['market_value_usd_total']
             adjusted_total_pnl = adjusted_final_value - starting_cash
 
-        print(f"Trades: {self.trades} Wins: {self.wins} Losses: {self.losses} WinRate: {wr:.2f}% PF: {pf:.2f}")
-        print(f"Final Value: {final_value:,.2f} | Total PnL: {total_pnl:+,.2f}")
+        instrument_nlv = self._compute_instrument_net_liq(broker_snapshot)
+
+        pf_text = f"{pf:.2f}" if math.isfinite(pf) else "inf"
+        summary_rows = [
+            ("Trades", f"{self.trades}"),
+            ("Wins", f"{self.wins}"),
+            ("Losses", f"{self.losses}"),
+            ("Win Rate", f"{wr:.2f}%"),
+            ("Profit Factor", pf_text),
+            ("Final Value (USD)", f"{final_value:,.2f}"),
+            ("Total PnL (USD)", f"{total_pnl:+,.2f}"),
+        ]
+
         if broker_snapshot.get('has_usd_valuation'):
-            print(
-                f"Adjusted Final Value (incl {broker_snapshot['pair']} broker position): "
-                f"{adjusted_final_value:,.2f} | Adjusted Total PnL: {adjusted_total_pnl:+,.2f}"
-            )
-            print(
-                f"  Broker {broker_snapshot['pair']} MktValue(USD): {broker_snapshot['market_value_usd_total']:+,.2f} "
-                f"| Broker UnrealPnL(USD): {broker_snapshot['unrealized_pnl_usd_total']:+,.2f}"
-            )
+            summary_rows.extend([
+                (f"Adjusted Final Value (incl {broker_snapshot['pair']})", f"{adjusted_final_value:,.2f}"),
+                ("Adjusted Total PnL (USD)", f"{adjusted_total_pnl:+,.2f}"),
+                (f"Broker {broker_snapshot['pair']} MktValue (USD)", f"{broker_snapshot['market_value_usd_total']:+,.2f}"),
+                (f"Broker {broker_snapshot['pair']} UnrealPnL (USD)", f"{broker_snapshot['unrealized_pnl_usd_total']:+,.2f}"),
+            ])
+
+        if instrument_nlv['nlv_base'] is not None and instrument_nlv['nlv_usd'] is not None:
+            summary_rows.append((
+                f"Instrument NetLiq ({instrument_nlv['pair']})",
+                f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']} | {instrument_nlv['nlv_usd']:+,.2f} USD",
+            ))
+        elif instrument_nlv['nlv_usd'] is not None:
+            summary_rows.append((f"Instrument NetLiq ({instrument_nlv['pair']})", f"{instrument_nlv['nlv_usd']:+,.2f} USD"))
+        elif instrument_nlv['nlv_base'] is not None:
+            summary_rows.append((f"Instrument NetLiq ({instrument_nlv['pair']})", f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']}"))
+        else:
+            summary_rows.append((f"Instrument NetLiq ({instrument_nlv['pair']})", "N/A"))
+
+        self._print_aligned_rows(summary_rows)
 
         # Include broker position details if connection is available
         self._print_broker_positions(snapshot=broker_snapshot)
@@ -4437,3 +4673,247 @@ class ITradingStrategyUSDJPY(ITradingStrategy):
 
         # Genuine pullback candle – delegate to base-class counter/completer
         return super()._phase2_confirm_pullback(armed_direction)
+
+
+class ITradingStrategyUSDCAD(ITradingStrategy):
+    params = dict(
+        instrument_name='USDCAD',
+        forex_base_currency='USD',
+        forex_quote_currency='CAD',
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        contract_size=100000,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
+        long_allow_continuation_entry=True,
+        long_atr_min_threshold=0.00017,
+        long_max_angle=85.0,
+    )
+
+    def _phase2_confirm_pullback(self, armed_direction):
+        """USDCAD override: keep ARMED during doji/continuation candles in phase2."""
+        use_pullback = (self.p.long_use_pullback_entry if armed_direction == 'LONG'
+                        else self.p.short_use_pullback_entry)
+        if not use_pullback:
+            self.last_pullback_candle_high = float(self.data.high[0])
+            self.last_pullback_candle_low = float(self.data.low[0])
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} bypass | pullback disabled | "
+                f"high={self.last_pullback_candle_high:.5f} low={self.last_pullback_candle_low:.5f}")
+            return True
+
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        candle_body = abs(current_close - current_open)
+
+        if candle_body < 0.00001:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} doji-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} < threshold=0.00001 | "
+                f"pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        long_continuation = (
+            armed_direction == 'LONG' and
+            bool(self.p.long_allow_continuation_entry) and
+            current_close > current_open
+        )
+        short_continuation = (
+            armed_direction == 'SHORT' and
+            bool(self.p.short_allow_continuation_entry) and
+            current_close < current_open
+        )
+        if long_continuation or short_continuation:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} continuation-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} | pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        return super()._phase2_confirm_pullback(armed_direction)
+
+
+class ITradingStrategyNZDUSD(ITradingStrategy):
+    params = dict(
+        instrument_name='NZDUSD',
+        forex_base_currency='NZD',
+        forex_quote_currency='USD',
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        contract_size=100000,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
+        long_allow_continuation_entry=True,
+        long_atr_min_threshold=0.00015,
+        long_max_angle=85.0,
+    )
+
+    def _phase2_confirm_pullback(self, armed_direction):
+        """NZDUSD override: keep ARMED during doji/continuation candles in phase2."""
+        use_pullback = (self.p.long_use_pullback_entry if armed_direction == 'LONG'
+                        else self.p.short_use_pullback_entry)
+        if not use_pullback:
+            self.last_pullback_candle_high = float(self.data.high[0])
+            self.last_pullback_candle_low = float(self.data.low[0])
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} bypass | pullback disabled | "
+                f"high={self.last_pullback_candle_high:.5f} low={self.last_pullback_candle_low:.5f}")
+            return True
+
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        candle_body = abs(current_close - current_open)
+
+        if candle_body < 0.00001:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} doji-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} < threshold=0.00001 | "
+                f"pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        long_continuation = (
+            armed_direction == 'LONG' and
+            bool(self.p.long_allow_continuation_entry) and
+            current_close > current_open
+        )
+        short_continuation = (
+            armed_direction == 'SHORT' and
+            bool(self.p.short_allow_continuation_entry) and
+            current_close < current_open
+        )
+        if long_continuation or short_continuation:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} continuation-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} | pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        return super()._phase2_confirm_pullback(armed_direction)
+
+
+class ITradingStrategyGBPJPY(ITradingStrategy):
+    params = dict(
+        instrument_name='GBPJPY',
+        forex_base_currency='GBP',
+        forex_quote_currency='JPY',
+        forex_pip_value=0.01,
+        forex_pip_decimal_places=3,
+        contract_size=100000,
+        forex_spread_pips=2.0,
+        forex_margin_required=3.33,
+        forex_jpy_rate=152.0,
+        long_allow_continuation_entry=True,
+        long_atr_min_threshold=0.022,
+        long_max_angle=88.0,
+    )
+
+    _DOJI_BODY_THRESHOLD = 0.001  # 0.1 pip for GBPJPY (3 dp)
+
+    def _phase2_confirm_pullback(self, armed_direction):
+        """GBPJPY override: treat doji and continuation candles as neutral in phase2."""
+        use_pullback = (self.p.long_use_pullback_entry if armed_direction == 'LONG'
+                        else self.p.short_use_pullback_entry)
+        if not use_pullback:
+            self.last_pullback_candle_high = float(self.data.high[0])
+            self.last_pullback_candle_low = float(self.data.low[0])
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} bypass | pullback disabled | "
+                f"high={self.last_pullback_candle_high:.3f} low={self.last_pullback_candle_low:.3f}")
+            return True
+
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        candle_body = abs(current_close - current_open)
+
+        if candle_body < self._DOJI_BODY_THRESHOLD:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} doji-neutral | "
+                f"close={current_close:.3f} open={current_open:.3f} "
+                f"body={candle_body:.3f} < threshold={self._DOJI_BODY_THRESHOLD:.3f} | "
+                f"pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        is_continuation = (
+            (armed_direction == 'SHORT' and current_close < current_open) or
+            (armed_direction == 'LONG' and current_close > current_open)
+        )
+        if is_continuation:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} continuation-neutral | "
+                f"close={current_close:.3f} open={current_open:.3f} "
+                f"body={candle_body:.3f} | pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        return super()._phase2_confirm_pullback(armed_direction)
+
+
+class ITradingStrategyEURGBP(ITradingStrategy):
+    params = dict(
+        instrument_name='EURGBP',
+        forex_base_currency='EUR',
+        forex_quote_currency='GBP',
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        contract_size=100000,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
+        forex_quote_to_account_rate=1.27,
+        long_allow_continuation_entry=True,
+        long_atr_min_threshold=0.00015,
+        long_max_angle=85.0,
+    )
+
+    def _phase2_confirm_pullback(self, armed_direction):
+        """EURGBP override: keep ARMED during doji/continuation candles in phase2."""
+        use_pullback = (self.p.long_use_pullback_entry if armed_direction == 'LONG'
+                        else self.p.short_use_pullback_entry)
+        if not use_pullback:
+            self.last_pullback_candle_high = float(self.data.high[0])
+            self.last_pullback_candle_low = float(self.data.low[0])
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} bypass | pullback disabled | "
+                f"high={self.last_pullback_candle_high:.5f} low={self.last_pullback_candle_low:.5f}")
+            return True
+
+        current_close = float(self.data.close[0])
+        current_open = float(self.data.open[0])
+        candle_body = abs(current_close - current_open)
+
+        if candle_body < 0.00001:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} doji-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} < threshold=0.00001 | "
+                f"pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        long_continuation = (
+            armed_direction == 'LONG' and
+            bool(self.p.long_allow_continuation_entry) and
+            current_close > current_open
+        )
+        short_continuation = (
+            armed_direction == 'SHORT' and
+            bool(self.p.short_allow_continuation_entry) and
+            current_close < current_open
+        )
+        if long_continuation or short_continuation:
+            self._lifecycle_debug(
+                f"phase2 {armed_direction} continuation-neutral | "
+                f"close={current_close:.5f} open={current_open:.5f} "
+                f"body={candle_body:.5f} | pullback_count={self.pullback_candle_count} (unchanged)"
+            )
+            return False
+
+        return super()._phase2_confirm_pullback(armed_direction)
+
+

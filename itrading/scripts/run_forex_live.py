@@ -23,21 +23,30 @@ from itrading.src.strategy import ITradingStrategyAUDUSD as DefaultITradingStrat
 DEFAULT_STRATEGY_MODULE = 'itrading.src.strategy'
 DEFAULT_FOREX_INSTRUMENT = 'AUDUSD'
 DEFAULT_STRATEGY_CLASS_NAME = 'ITradingStrategyAUDUSD'
+DEFAULT_IB_BRACKET_EXIT_TIF = 'GTC'
 STRATEGY_CLASS_BY_INSTRUMENT = {
     'AUDUSD': 'ITradingStrategyAUDUSD',
     'EURUSD': 'ITradingStrategyEURUSD',
+    'EURGBP': 'ITradingStrategyEURGBP',
     'GBPUSD': 'ITradingStrategyGBPUSD',
+    'GBPJPY': 'ITradingStrategyGBPJPY',
     'EURJPY': 'ITradingStrategyEURJPY',
     'USDCHF': 'ITradingStrategyUSDCHF',
     'USDJPY': 'ITradingStrategyUSDJPY',
+    'USDCAD': 'ITradingStrategyUSDCAD',
+    'NZDUSD': 'ITradingStrategyNZDUSD',
 }
 PRICE_PRECISION_BY_INSTRUMENT = {
     'AUDUSD': 5,
     'EURUSD': 5,
+    'EURGBP': 5,
     'GBPUSD': 5,
+    'GBPJPY': 3,
     'EURJPY': 3,
     'USDCHF': 5,
     'USDJPY': 3,
+    'USDCAD': 5,
+    'NZDUSD': 5,
 }
 STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT = {
     'AUDUSD': {
@@ -58,6 +67,16 @@ STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT = {
         'forex_spread_pips': 2.2,
         'forex_margin_required': 3.33,
     },
+    'EURGBP': {
+        'forex_base_currency': 'EUR',
+        'forex_quote_currency': 'GBP',
+        'forex_pip_value': 0.0001,
+        'forex_pip_decimal_places': 5,
+        'contract_size': 100000,
+        'forex_spread_pips': 2.2,
+        'forex_margin_required': 3.33,
+        'forex_quote_to_account_rate': 1.27,
+    },
     'GBPUSD': {
         'forex_base_currency': 'GBP',
         'forex_quote_currency': 'USD',
@@ -66,6 +85,16 @@ STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT = {
         'contract_size': 100000,
         'forex_spread_pips': 2.2,
         'forex_margin_required': 3.33,
+    },
+    'GBPJPY': {
+        'forex_base_currency': 'GBP',
+        'forex_quote_currency': 'JPY',
+        'forex_pip_value': 0.01,
+        'forex_pip_decimal_places': 3,
+        'contract_size': 100000,
+        'forex_spread_pips': 2.0,
+        'forex_margin_required': 3.33,
+        'forex_jpy_rate': 152.0,
     },
     'EURJPY': {
         'forex_base_currency': 'EUR',
@@ -95,6 +124,24 @@ STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT = {
         'forex_spread_pips': 1.0,
         'forex_margin_required': 2.0,
         'forex_jpy_rate': 152.0,
+    },
+    'USDCAD': {
+        'forex_base_currency': 'USD',
+        'forex_quote_currency': 'CAD',
+        'forex_pip_value': 0.0001,
+        'forex_pip_decimal_places': 5,
+        'contract_size': 100000,
+        'forex_spread_pips': 2.2,
+        'forex_margin_required': 3.33,
+    },
+    'NZDUSD': {
+        'forex_base_currency': 'NZD',
+        'forex_quote_currency': 'USD',
+        'forex_pip_value': 0.0001,
+        'forex_pip_decimal_places': 5,
+        'contract_size': 100000,
+        'forex_spread_pips': 2.2,
+        'forex_margin_required': 3.33,
     },
 }
 
@@ -149,6 +196,34 @@ class StrategyIBConnectionAdapter:
                 'currency': str(getattr(contract, 'currency', '') or 'USD').upper(),
             })
         return normalized_positions
+
+    def get_cash_balances(self) -> dict[str, float]:
+        """Return per-currency cash balances from IB account values when available."""
+        if not self.connected:
+            return {}
+
+        try:
+            account_values = self._ib.accountValues()
+        except Exception:
+            return {}
+
+        balances: dict[str, float] = {}
+        for entry in account_values or []:
+            tag = str(getattr(entry, 'tag', '') or '')
+            # Prefer TotalCashBalance/CashBalance style rows that are currency-scoped.
+            if tag not in ('TotalCashBalance', 'CashBalance'):
+                continue
+
+            currency = str(getattr(entry, 'currency', '') or '').upper()
+            if not currency:
+                continue
+
+            value = _safe_float(getattr(entry, 'value', 0.0), 0.0)
+            # Keep first seen value for a currency to avoid double counting duplicate account/model rows.
+            if currency not in balances:
+                balances[currency] = value
+
+        return balances
 
 
 def _strategy_ib_connection() -> StrategyIBConnectionAdapter | None:
@@ -228,6 +303,15 @@ def _normalize_live_params(params: dict) -> dict:
     target_default_precision = _default_price_precision_for_instrument(instrument)
     if not normalized.get('PRICE_PRECISION') or (instrument_override and normalized.get('PRICE_PRECISION') == configured_default_precision):
         normalized['PRICE_PRECISION'] = target_default_precision
+
+    # Bracket exit orders (TP/SL) TIF is configurable for live IB execution.
+    raw_exit_tif = str(normalized.get('IB_BRACKET_EXIT_TIF', DEFAULT_IB_BRACKET_EXIT_TIF) or '').strip().upper()
+    if raw_exit_tif not in ('DAY', 'GTC'):
+        logger.warning(
+            f"Invalid IB_BRACKET_EXIT_TIF '{raw_exit_tif or '<empty>'}'. "
+            f"Falling back to {DEFAULT_IB_BRACKET_EXIT_TIF}.")
+        raw_exit_tif = DEFAULT_IB_BRACKET_EXIT_TIF
+    normalized['IB_BRACKET_EXIT_TIF'] = raw_exit_tif
 
     return normalized
 
@@ -558,6 +642,9 @@ async def execute_live_trade(contract, signal, params):
         take_profit_price = round(signal['take_profit'], price_precision)
         action = "BUY" if signal['direction'] == 'LONG' else 'SELL'
         quantity = float(signal['size'])
+        exit_tif = str(params.get('IB_BRACKET_EXIT_TIF', DEFAULT_IB_BRACKET_EXIT_TIF)).strip().upper() or DEFAULT_IB_BRACKET_EXIT_TIF
+        if exit_tif not in ('DAY', 'GTC'):
+            exit_tif = DEFAULT_IB_BRACKET_EXIT_TIF
 
         parent_order = Order(
             orderId=parent_order_id,
@@ -572,6 +659,7 @@ async def execute_live_trade(contract, signal, params):
             orderType="LMT",
             totalQuantity=quantity,
             lmtPrice=take_profit_price,
+            tif=exit_tif,
             parentId=parent_order_id,
             transmit=False
         )
@@ -581,6 +669,7 @@ async def execute_live_trade(contract, signal, params):
             orderType="STP",
             auxPrice=stop_loss_price,
             totalQuantity=quantity,
+            tif=exit_tif,
             parentId=parent_order_id,
             transmit=True
         )
@@ -595,7 +684,9 @@ async def execute_live_trade(contract, signal, params):
                 stop_loss_order_id=stop_loss_order.orderId,
             )
 
-        logger.info(f"Placing bracket order: {action} {quantity} {contract.symbol} SL: {stop_loss_price} TP: {take_profit_price}")
+        logger.info(
+            f"Placing bracket order: {action} {quantity} {contract.symbol} "
+            f"SL: {stop_loss_price} TP: {take_profit_price} EXIT_TIF: {exit_tif}")
         ib.placeOrder(contract, parent_order)
         ib.placeOrder(contract, take_profit_order)
         ib.placeOrder(contract, stop_loss_order)
