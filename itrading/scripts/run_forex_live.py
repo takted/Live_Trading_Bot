@@ -24,6 +24,16 @@ DEFAULT_STRATEGY_MODULE = 'itrading.src.strategy'
 DEFAULT_FOREX_INSTRUMENT = 'AUDUSD'
 DEFAULT_STRATEGY_CLASS_NAME = 'ITradingStrategyAUDUSD'
 DEFAULT_IB_BRACKET_EXIT_TIF = 'GTC'
+DEFAULT_PORTFOLIO_POLICY = {
+    'enabled': False,
+    'total_capital_usd': 100000.0,
+    'default_instrument_allocation_usd': 10000.0,
+    'risk_per_trade_percent': 0.01,
+    'risk_per_trade_usd': None,
+    'default_max_simultaneous_positions_per_symbol': 2,
+    'instrument_allocations_usd': {},
+    'instrument_max_positions': {},
+}
 STRATEGY_CLASS_BY_INSTRUMENT = {
     'AUDUSD': 'ITradingStrategyAUDUSD',
     'EURUSD': 'ITradingStrategyEURUSD',
@@ -261,6 +271,102 @@ def _default_price_precision_for_instrument(instrument: str) -> int:
 def _default_forex_strategy_params_for_instrument(instrument: str) -> dict:
     instrument_key = str(instrument or DEFAULT_FOREX_INSTRUMENT).strip().upper() or DEFAULT_FOREX_INSTRUMENT
     return dict(STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT.get(instrument_key, STRATEGY_FOREX_DEFAULTS_BY_INSTRUMENT[DEFAULT_FOREX_INSTRUMENT]))
+
+
+def _load_portfolio_policy(config_dir: Path) -> dict:
+    """Load portfolio risk policy from explicit path or default config location."""
+    policy = dict(DEFAULT_PORTFOLIO_POLICY)
+
+    explicit_policy_file = os.getenv('ITRADING_PORTFOLIO_POLICY_FILE', '').strip()
+    if explicit_policy_file:
+        policy_path = Path(explicit_policy_file)
+        if not policy_path.is_absolute():
+            policy_path = (Path.cwd() / policy_path).resolve()
+    else:
+        policy_path = config_dir / 'portfolio_risk.json'
+
+    if not policy_path.exists():
+        return policy
+
+    try:
+        loaded = json.loads(policy_path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        logger.warning(f"Could not parse portfolio policy file {policy_path}: {exc}")
+        return policy
+
+    if not isinstance(loaded, dict):
+        logger.warning(f"Ignoring portfolio policy file {policy_path}: expected JSON object.")
+        return policy
+
+    policy.update(loaded)
+    logger.info(f"Loaded portfolio policy from: {policy_path}")
+    return policy
+
+
+def _apply_portfolio_policy(params: dict, policy: dict) -> dict:
+    """Inject portfolio policy-derived sizing parameters into STRATEGY_PARAMS."""
+    normalized = dict(params or {})
+    instrument = str(normalized.get('FOREX_INSTRUMENT', DEFAULT_FOREX_INSTRUMENT)).strip().upper() or DEFAULT_FOREX_INSTRUMENT
+    strategy_params = dict(normalized.get('STRATEGY_PARAMS') or {})
+
+    enabled = bool(policy.get('enabled', DEFAULT_PORTFOLIO_POLICY['enabled']))
+    strategy_params['portfolio_policy_enabled'] = enabled
+    if not enabled:
+        normalized['STRATEGY_PARAMS'] = strategy_params
+        return normalized
+
+    total_capital_usd = _safe_float(policy.get('total_capital_usd', DEFAULT_PORTFOLIO_POLICY['total_capital_usd']), DEFAULT_PORTFOLIO_POLICY['total_capital_usd'])
+    default_allocation_usd = _safe_float(
+        policy.get('default_instrument_allocation_usd', DEFAULT_PORTFOLIO_POLICY['default_instrument_allocation_usd']),
+        DEFAULT_PORTFOLIO_POLICY['default_instrument_allocation_usd'],
+    )
+
+    allocations = policy.get('instrument_allocations_usd', {})
+    if not isinstance(allocations, dict):
+        allocations = {}
+    instrument_allocation_usd = _safe_float(allocations.get(instrument, default_allocation_usd), default_allocation_usd)
+    if instrument_allocation_usd <= 0:
+        instrument_allocation_usd = default_allocation_usd
+
+    risk_per_trade_usd = policy.get('risk_per_trade_usd', DEFAULT_PORTFOLIO_POLICY['risk_per_trade_usd'])
+    if risk_per_trade_usd in (None, ''):
+        risk_per_trade_percent = _safe_float(
+            policy.get('risk_per_trade_percent', DEFAULT_PORTFOLIO_POLICY['risk_per_trade_percent']),
+            DEFAULT_PORTFOLIO_POLICY['risk_per_trade_percent'],
+        )
+        risk_per_trade_usd = instrument_allocation_usd * risk_per_trade_percent
+    else:
+        risk_per_trade_usd = _safe_float(risk_per_trade_usd, instrument_allocation_usd * DEFAULT_PORTFOLIO_POLICY['risk_per_trade_percent'])
+
+    if risk_per_trade_usd <= 0:
+        risk_per_trade_usd = instrument_allocation_usd * DEFAULT_PORTFOLIO_POLICY['risk_per_trade_percent']
+
+    allocation_fraction = (instrument_allocation_usd / total_capital_usd) if total_capital_usd > 0 else 1.0
+    if allocation_fraction <= 0:
+        allocation_fraction = 1.0
+
+    max_positions_map = policy.get('instrument_max_positions', {})
+    if not isinstance(max_positions_map, dict):
+        max_positions_map = {}
+    max_positions_default = _safe_int(
+        policy.get('default_max_simultaneous_positions_per_symbol', DEFAULT_PORTFOLIO_POLICY['default_max_simultaneous_positions_per_symbol']),
+        DEFAULT_PORTFOLIO_POLICY['default_max_simultaneous_positions_per_symbol'],
+    )
+    max_positions = _safe_int(max_positions_map.get(instrument, max_positions_default), max_positions_default)
+    if max_positions < 1:
+        max_positions = 1
+
+    strategy_params['portfolio_total_capital_usd'] = total_capital_usd
+    strategy_params['instrument_capital_allocation_usd'] = instrument_allocation_usd
+    strategy_params['instrument_allocation_fraction'] = allocation_fraction
+    strategy_params['portfolio_risk_amount_usd'] = risk_per_trade_usd
+    strategy_params['max_simultaneous_positions_per_symbol'] = max_positions
+
+    normalized['STRATEGY_PARAMS'] = strategy_params
+    logger.info(
+        f"Portfolio policy ({instrument}): allocation_usd={instrument_allocation_usd:.2f} "
+        f"risk_per_trade_usd={risk_per_trade_usd:.2f} max_positions={max_positions}")
+    return normalized
 
 
 def _normalize_live_params(params: dict) -> dict:
@@ -514,6 +620,103 @@ def _has_open_position_for_forex_pair(forex_pair: str) -> bool:
     return False
 
 
+def _count_open_broker_position_slots_for_forex_pair(forex_pair: str) -> int:
+    """Return 1 when broker has a non-zero net position for the pair, else 0.
+
+    IB FX positions are netted at account level, so this is intentionally a 0/1 slot count.
+    """
+    return 1 if _has_open_position_for_forex_pair(forex_pair) else 0
+
+
+def _count_active_live_bridge_trades_for_pair(forex_pair: str) -> int:
+    """Count active local lifecycle trades (pending/submitted/open) for the pair."""
+    if live_lifecycle_bridge is None:
+        return 0
+
+    pair = str(forex_pair or '').strip().upper()
+    base = pair[:3] if len(pair) >= 6 else pair
+    active_count = 0
+
+    for trade in live_lifecycle_bridge.trades.values():
+        status = str(getattr(trade, 'status', '') or '').upper()
+        if status in {'CLOSED', 'CANCELLED', 'REJECTED'}:
+            continue
+
+        trade_symbol = str(getattr(trade, 'symbol', '') or '').strip().upper().replace('.', '')
+        if trade_symbol == pair or trade_symbol == base:
+            active_count += 1
+
+    return active_count
+
+
+def _resolve_max_positions_per_symbol(params: dict) -> int:
+    """Resolve effective per-symbol position cap with policy-first precedence."""
+    strategy_params = dict((params or {}).get('STRATEGY_PARAMS') or {})
+
+    policy_cap = _safe_int(strategy_params.get('max_simultaneous_positions_per_symbol', 0), 0)
+    if policy_cap >= 1:
+        return policy_cap
+
+    # Legacy compatibility path.
+    allow_multiple = bool((params or {}).get('ALLOW_MULTIPLE_POSITIONS_PER_SYMBOL', False))
+    if not allow_multiple:
+        return 1
+
+    explicit_cap = _safe_int((params or {}).get('MAX_SIMULTANEOUS_POSITIONS_PER_SYMBOL', 3), 3)
+    return explicit_cap if explicit_cap >= 1 else 3
+
+
+def _get_quote_to_account_rate_from_params(strategy_params: dict) -> float:
+    """Approximate quote->account conversion used for live diagnostics."""
+    quote_currency = str(strategy_params.get('forex_quote_currency', '') or '').upper()
+    account_currency = str(strategy_params.get('account_currency', 'USD') or '').upper()
+    if not quote_currency or quote_currency == account_currency:
+        return 1.0
+
+    if quote_currency == 'JPY' and account_currency == 'USD':
+        jpy_rate = _safe_float(strategy_params.get('forex_jpy_rate', 0.0), 0.0)
+        if jpy_rate > 0:
+            return 1.0 / jpy_rate
+
+    explicit_rate = _safe_float(strategy_params.get('forex_quote_to_account_rate', 0.0), 0.0)
+    return explicit_rate if explicit_rate > 0 else 1.0
+
+
+def _estimate_margin_required_usd(params: dict, units: float, reference_price: float) -> float:
+    """Estimate required margin in account currency for diagnostic logging."""
+    strategy_params = dict((params or {}).get('STRATEGY_PARAMS') or {})
+    margin_pct = _safe_float(strategy_params.get('forex_margin_required', 3.33), 3.33)
+
+    base_currency = str(strategy_params.get('forex_base_currency', '') or '').upper()
+    account_currency = str(strategy_params.get('account_currency', 'USD') or '').upper()
+
+    if base_currency and base_currency == account_currency:
+        unit_value_in_account = 1.0
+    else:
+        unit_value_in_account = float(reference_price or 0.0) * _get_quote_to_account_rate_from_params(strategy_params)
+
+    if unit_value_in_account <= 0:
+        return 0.0
+
+    notional_value = abs(float(units)) * unit_value_in_account
+    return notional_value * (margin_pct / 100.0)
+
+
+def _resolve_risk_budget_usd(params: dict) -> float:
+    """Resolve effective per-trade risk budget in account currency for diagnostics."""
+    strategy_params = dict((params or {}).get('STRATEGY_PARAMS') or {})
+    explicit_risk = strategy_params.get('portfolio_risk_amount_usd', None)
+    if explicit_risk not in (None, ''):
+        return _safe_float(explicit_risk, 0.0)
+
+    risk_percent = _safe_float(strategy_params.get('risk_percent', 0.01), 0.01)
+    allocation = strategy_params.get('instrument_capital_allocation_usd', None)
+    if allocation in (None, ''):
+        allocation = (params or {}).get('STARTING_CASH', 0.0)
+
+    return _safe_float(allocation, 0.0) * risk_percent
+
+
 def _normalize_ib_bars_df(df, source_name):
     """Normalize IB dataframe schema and datetime index for Backtrader feeds."""
     if df is None or df.empty:
@@ -623,13 +826,20 @@ def load_params():
 
     with open(params_path, 'r', encoding='utf-8') as f:
         normalized = _normalize_live_params(json.load(f))
+
+    policy = _load_portfolio_policy(config_dir)
+    normalized = _apply_portfolio_policy(normalized, policy)
+
     logger.info(f"Loading parameters from: {params_path}")
     strategy_params = normalized.get('STRATEGY_PARAMS', {})
     logger.info(
         "Effective sizing params: "
         f"min_exchange_units={strategy_params.get('min_exchange_units')} "
         f"max_position_size_fraction={strategy_params.get('max_position_size_fraction', 'default')} "
-        f"risk_percent={strategy_params.get('risk_percent')}")
+        f"risk_percent={strategy_params.get('risk_percent')} "
+        f"portfolio_policy_enabled={strategy_params.get('portfolio_policy_enabled', False)} "
+        f"allocation_usd={strategy_params.get('instrument_capital_allocation_usd', 'n/a')} "
+        f"risk_usd={strategy_params.get('portfolio_risk_amount_usd', 'n/a')}")
     return normalized
 
 async def execute_live_trade(contract, signal, params):
@@ -676,7 +886,8 @@ async def execute_live_trade(contract, signal, params):
 
         bridge_trade_id = None
         if live_lifecycle_bridge is not None:
-            bridge_trade_id = live_lifecycle_bridge.register_signal(contract.symbol, signal)
+            bridge_symbol = str(params.get('FOREX_INSTRUMENT', contract.symbol) or contract.symbol).upper()
+            bridge_trade_id = live_lifecycle_bridge.register_signal(bridge_symbol, signal)
             live_lifecycle_bridge.register_bracket_orders(
                 trade_id=bridge_trade_id,
                 parent_order_id=parent_order_id,
@@ -866,11 +1077,28 @@ async def run_strategy_on_live_bar(live_bars):
 
             logger.info(f"✅ Signal received from strategy (fresh): {signal}")
 
-            allow_multiple = bool(params.get('ALLOW_MULTIPLE_POSITIONS_PER_SYMBOL', False))
-            if not allow_multiple and _has_open_position_for_forex_pair(params['FOREX_INSTRUMENT']):
+            instrument = str(params.get('FOREX_INSTRUMENT', '')).strip().upper()
+            max_positions = _resolve_max_positions_per_symbol(params)
+            broker_slots = _count_open_broker_position_slots_for_forex_pair(instrument)
+            local_active_slots = _count_active_live_bridge_trades_for_pair(instrument)
+            effective_slots = max(broker_slots, local_active_slots)
+            cap_blocked = effective_slots >= max_positions
+
+            signal_units = _safe_float(signal.get('size', 0.0), 0.0)
+            latest_close = _safe_float(live_df['close'].iloc[-1], 0.0)
+            est_margin_usd = _estimate_margin_required_usd(params, signal_units, latest_close)
+            risk_budget_usd = _resolve_risk_budget_usd(params)
+            logger.info(
+                f"[SIGNAL-DIAG] {instrument} dir={signal.get('direction')} "
+                f"risk_budget_usd={risk_budget_usd:.2f} units={signal_units:,.0f} "
+                f"est_margin_usd={est_margin_usd:.2f} cap={effective_slots}/{max_positions} "
+                f"decision={'BLOCKED' if cap_blocked else 'ALLOWED'}")
+
+            if cap_blocked:
                 logger.info(
-                    f"Skipping order: existing position already open for {params['FOREX_INSTRUMENT']} "
-                    f"(ALLOW_MULTIPLE_POSITIONS_PER_SYMBOL={allow_multiple})")
+                    f"Skipping order: position cap reached for {instrument} "
+                    f"(active_slots={effective_slots}, broker_slots={broker_slots}, "
+                    f"bridge_slots={local_active_slots}, max_positions={max_positions})")
                 return
 
             contract = Forex(params['FOREX_INSTRUMENT'])

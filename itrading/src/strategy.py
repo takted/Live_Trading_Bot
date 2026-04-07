@@ -342,6 +342,12 @@ class ITradingStrategy(bt.Strategy):
         enable_risk_sizing=True,
         risk_percent=0.01,
         max_position_size_fraction=None,
+        portfolio_policy_enabled=False,
+        portfolio_total_capital_usd=None,
+        instrument_capital_allocation_usd=None,
+        instrument_allocation_fraction=1.0,
+        portfolio_risk_amount_usd=None,
+        max_simultaneous_positions_per_symbol=1,
         long_atr_sl_multiplier=4.4,
         long_atr_tp_multiplier=6.8,
         short_atr_sl_multiplier=2.5,
@@ -717,6 +723,33 @@ class ITradingStrategy(bt.Strategy):
 
         account_equity = self.broker.get_value()
 
+        portfolio_policy_enabled = bool(getattr(self.p, 'portfolio_policy_enabled', False))
+        sizing_capital = float(account_equity)
+        if portfolio_policy_enabled:
+            total_capital = getattr(self.p, 'portfolio_total_capital_usd', None)
+            allocation_usd = getattr(self.p, 'instrument_capital_allocation_usd', None)
+            allocation_fraction = getattr(self.p, 'instrument_allocation_fraction', 1.0)
+
+            try:
+                total_capital = float(total_capital) if total_capital not in (None, '') else float(account_equity)
+            except (TypeError, ValueError):
+                total_capital = float(account_equity)
+
+            try:
+                allocation_fraction = float(allocation_fraction)
+            except (TypeError, ValueError):
+                allocation_fraction = 1.0
+            if allocation_fraction <= 0:
+                allocation_fraction = 1.0
+
+            try:
+                allocation_usd = float(allocation_usd) if allocation_usd not in (None, '') else (total_capital * allocation_fraction)
+            except (TypeError, ValueError):
+                allocation_usd = total_capital * allocation_fraction
+
+            if allocation_usd > 0:
+                sizing_capital = allocation_usd
+
         # 1. Define minimum exchange units for the configured forex instrument.
         min_exchange_units = max(int(getattr(self.p, 'min_exchange_units', 2500) or 0), 1)
 
@@ -734,7 +767,7 @@ class ITradingStrategy(bt.Strategy):
         if max_position_size_fraction <= 0:
             max_position_size_fraction = config.MAX_POSITION_SIZE
 
-        max_position_value_account = max_position_size_fraction * account_equity
+        max_position_value_account = max_position_size_fraction * sizing_capital
         unit_value_in_account = self._get_base_unit_value_in_account_currency(entry_price)
         if unit_value_in_account > 0:
             max_units_by_value = int(max_position_value_account / unit_value_in_account)
@@ -747,7 +780,17 @@ class ITradingStrategy(bt.Strategy):
             # We can afford the minimum size. Now, calculate size based on risk.
             price_difference = abs(entry_price - stop_loss_price)
             pip_risk = price_difference / self.p.forex_pip_value
-            risk_amount = account_equity * self.p.risk_percent
+            if portfolio_policy_enabled:
+                explicit_risk_amount = getattr(self.p, 'portfolio_risk_amount_usd', None)
+                if explicit_risk_amount in (None, ''):
+                    risk_amount = sizing_capital * self.p.risk_percent
+                else:
+                    try:
+                        risk_amount = float(explicit_risk_amount)
+                    except (TypeError, ValueError):
+                        risk_amount = sizing_capital * self.p.risk_percent
+            else:
+                risk_amount = account_equity * self.p.risk_percent
             
             if pip_risk > 0:
                 value_per_pip_per_unit = self._get_pip_value_per_unit_in_account_currency(entry_price)
@@ -767,6 +810,7 @@ class ITradingStrategy(bt.Strategy):
                 f"DEBUG_POSITION_SIZE: Trade blocked. Not enough capital to meet minimum exchange size of {min_exchange_units}. "
                 f"Max affordable is {max_units_by_value}. "
                 f"Exposure cap fraction={max_position_size_fraction:.3f}, equity={account_equity:.2f}, "
+                f"sizing_capital={sizing_capital:.2f}, "
                 f"unit_value={unit_value_in_account:.5f}")
             return 0.0, 0, 0.0, 0.0, 0.0
 
