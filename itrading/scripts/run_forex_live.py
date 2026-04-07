@@ -105,6 +105,8 @@ last_processed_time = None
 historical_df = None
 active_tasks = set()
 g_last_tick_info = None
+last_live_bar_received_at = None
+live_bar_count = 0
 last_live_processed_dt = None
 live_strategy_state = None
 live_lifecycle_bridge: Optional[LiveLifecycleBridge] = None
@@ -354,6 +356,25 @@ def _on_ib_exec_details_event(*args):
     )
 
 
+def _on_ib_error_event(*args):
+    """Log IB API errors/warnings relevant to live market data subscriptions."""
+    try:
+        req_id = args[0] if len(args) > 0 else None
+        code = args[1] if len(args) > 1 else None
+        msg = args[2] if len(args) > 2 else ''
+        contract = args[3] if len(args) > 3 else None
+        contract_desc = ''
+        if contract is not None:
+            symbol = str(getattr(contract, 'symbol', '') or '').upper()
+            currency = str(getattr(contract, 'currency', '') or '').upper()
+            sec_type = str(getattr(contract, 'secType', '') or '').upper()
+            contract_desc = f" | contract={symbol}/{currency} {sec_type}" if symbol else ''
+        logger.warning(f"IB errorEvent | reqId={req_id} code={code} msg={msg}{contract_desc}")
+    except Exception:
+        # Avoid breaking event loop due to logging issues.
+        pass
+
+
 def _setup_ib_lifecycle_handlers():
     """Attach lifecycle bridge handlers to IB events when supported by the IB wrapper."""
     if hasattr(ib, 'orderStatusEvent'):
@@ -365,6 +386,11 @@ def _setup_ib_lifecycle_handlers():
         ib.execDetailsEvent += _on_ib_exec_details_event
     else:
         logger.warning("IB client does not expose execDetailsEvent; live lifecycle fill mirroring is limited.")
+
+    if hasattr(ib, 'errorEvent'):
+        ib.errorEvent += _on_ib_error_event
+    else:
+        logger.warning("IB client does not expose errorEvent; market data diagnostics are limited.")
 
 
 def _has_open_position_for_forex_pair(forex_pair: str) -> bool:
@@ -481,15 +507,32 @@ def load_params():
 
     explicit_path = os.getenv('ITRADING_PARAMS_FILE', '').strip()
     profile = os.getenv('ITRADING_PARAMS_PROFILE', 'live').strip().lower()
+    instrument_hint = os.getenv('ITRADING_FOREX_INSTRUMENT', '').strip().lower()
 
     if explicit_path:
         params_path = Path(explicit_path)
         if not params_path.is_absolute():
             params_path = (Path.cwd() / params_path).resolve()
-    elif profile == 'paper':
-        params_path = config_dir / 'parameters_paper.json'
     else:
-        params_path = config_dir / 'parameters_live.json'
+        candidate_names = []
+        if profile == 'paper':
+            if instrument_hint:
+                candidate_names.append(f'parameters_paper_{instrument_hint}.json')
+            candidate_names.append('parameters_paper.json')
+        else:
+            if instrument_hint:
+                candidate_names.append(f'parameters_live_{instrument_hint}.json')
+            candidate_names.append('parameters_live.json')
+
+        params_path = None
+        for name in candidate_names:
+            candidate = config_dir / name
+            if candidate.exists():
+                params_path = candidate
+                break
+
+        if params_path is None:
+            params_path = config_dir / 'parameters_live.json'
 
     if not params_path.exists():
         params_path = config_dir / 'parameters.json'
@@ -497,6 +540,12 @@ def load_params():
     with open(params_path, 'r', encoding='utf-8') as f:
         normalized = _normalize_live_params(json.load(f))
     logger.info(f"Loading parameters from: {params_path}")
+    strategy_params = normalized.get('STRATEGY_PARAMS', {})
+    logger.info(
+        "Effective sizing params: "
+        f"min_exchange_units={strategy_params.get('min_exchange_units')} "
+        f"max_position_size_fraction={strategy_params.get('max_position_size_fraction', 'default')} "
+        f"risk_percent={strategy_params.get('risk_percent')}")
     return normalized
 
 async def execute_live_trade(contract, signal, params):
@@ -560,11 +609,21 @@ async def execute_live_trade(contract, signal, params):
 
 def on_bar_update(bars, has_new_bar):
     """Callback triggered on new bar data."""
-    global last_processed_time, active_tasks, g_last_tick_info
-    
-    latest_bar = bars[-1]
-    current_time = latest_bar.time
-    
+    global last_processed_time, active_tasks, g_last_tick_info, last_live_bar_received_at, live_bar_count
+
+    if not bars:
+        return
+
+    try:
+        latest_bar = bars[-1]
+        current_time = latest_bar.time
+    except Exception as exc:
+        logger.warning(f"Live bar callback parsing issue: {exc}")
+        return
+
+    last_live_bar_received_at = datetime.now(timezone.utc)
+    live_bar_count += 1
+
     # Print live ticks as they come in
     current_tick_info = (current_time, latest_bar.close, latest_bar.open_, latest_bar.high, latest_bar.low)
     if current_tick_info != g_last_tick_info:
@@ -681,17 +740,38 @@ async def run_strategy_on_live_bar(live_bars):
             }
         last_live_processed_dt = latest_live_dt
         
-        # Try to get signal from queue with short timeout
-        # The strategy.next() method will emit to queue if conditions are met
-        try:
-            signal = signal_queue.get_nowait()  # Non-blocking get
+        # Drain all emitted signals from this cycle and prefer the freshest one that
+        # belongs to the latest live bar.
+        drained_signals = []
+        while True:
+            try:
+                drained_signals.append(signal_queue.get_nowait())
+            except queue.Empty:
+                break
 
+        if drained_signals:
             max_age_seconds = int(params.get('LIVE_MAX_SIGNAL_AGE_SECONDS', 420))
-            is_fresh, reason = _is_signal_fresh(signal, latest_live_dt, max_age_seconds)
-            if not is_fresh:
+            signal = None
+            last_stale_reason = ""
+            last_stale_signal = None
+
+            for candidate in reversed(drained_signals):
+                is_fresh, reason = _is_signal_fresh(candidate, latest_live_dt, max_age_seconds)
+                if is_fresh:
+                    signal = candidate
+                    break
+                last_stale_reason = reason
+                last_stale_signal = candidate
+
+            if signal is None:
                 logger.warning(
-                    f"⚠️ Stale signal blocked (no order sent): {reason} | signal={signal}")
+                    "⚠️ Stale signal(s) blocked (no order sent): "
+                    f"{last_stale_reason} | count={len(drained_signals)} | signal={last_stale_signal}")
                 return
+
+            if len(drained_signals) > 1:
+                logger.info(
+                    f"Received {len(drained_signals)} signal(s) this cycle; using freshest signal for latest bar.")
 
             logger.info(f"✅ Signal received from strategy (fresh): {signal}")
 
@@ -705,7 +785,7 @@ async def run_strategy_on_live_bar(live_bars):
             contract = Forex(params['FOREX_INSTRUMENT'])
             await ib.qualifyContractsAsync(contract)
             await execute_live_trade(contract, signal, params)
-        except queue.Empty:
+        else:
             logger.info("No signal generated in this analysis cycle (all conditions not met).")
     except Exception as e:
         logger.error(f"An error occurred during live strategy execution: {e}", exc_info=True)
@@ -720,9 +800,11 @@ async def run_historical_analysis(params):
     await ib.qualifyContractsAsync(contract)
 
     logger.info(f"Fetching historical {params['BAR_SIZE']} bars for {params['FOREX_INSTRUMENT']}...")
+    use_rth_historical = bool(params.get('IB_USE_RTH_HISTORICAL', False))
+    logger.info(f"Historical data request settings: useRTH={use_rth_historical}")
     bars = await ib.reqHistoricalDataAsync(
         contract, endDateTime='', durationStr=params['HIST_DURATION'],
-        barSizeSetting=params['BAR_SIZE'], whatToShow='MIDPOINT', useRTH=True)
+        barSizeSetting=params['BAR_SIZE'], whatToShow='MIDPOINT', useRTH=use_rth_historical)
 
     if not bars:
         logger.error("❌ No historical data received for warm-up. Exiting.")
@@ -754,10 +836,13 @@ async def run_historical_analysis(params):
 async def run_bot():
     """Core logic: connect, run historical analysis, then switch to live trading."""
     global last_live_processed_dt, live_strategy_state, live_lifecycle_bridge, last_bt_cycle_summary
+    global last_live_bar_received_at, live_bar_count
     global active_strategy_class, active_strategy_label
     last_live_processed_dt = None
     live_strategy_state = None
     last_bt_cycle_summary = None
+    last_live_bar_received_at = None
+    live_bar_count = 0
 
     params = load_params()
     active_strategy_class, active_strategy_label = resolve_strategy_class(params)
@@ -773,13 +858,64 @@ async def run_bot():
     if not await run_historical_analysis(params):
         return
 
+    # Start live processing strictly AFTER the historical warm-up horizon.
+    # This prevents first live cycle from replaying historical bars and emitting stale signals.
+    if historical_df is not None and not historical_df.empty:
+        try:
+            last_live_processed_dt = historical_df.index.max().to_pydatetime()
+            logger.info(f"Initialized live cutoff from historical tail: {last_live_processed_dt}")
+        except Exception:
+            last_live_processed_dt = None
+
     logger.info("--- Transitioning to LIVE MODE. Awaiting new 5-second bar data... ---")
     contract = Forex(params['FOREX_INSTRUMENT'])
-    live_bars = ib.reqRealTimeBars(contract, 5, 'MIDPOINT', True)
-    live_bars.updateEvent += on_bar_update
+    await ib.qualifyContractsAsync(contract)
+    logger.info(
+        f"Qualified live contract: {getattr(contract, 'symbol', '')}/{getattr(contract, 'currency', '')} "
+        f"secType={getattr(contract, 'secType', '')} exchange={getattr(contract, 'exchange', '')}")
+    use_rth_live = bool(params.get('IB_USE_RTH_LIVE', False))
+    first_bar_timeout_seconds = int(params.get('IB_FIRST_LIVE_BAR_TIMEOUT_SECONDS', 25))
+
+    # Prefer MIDPOINT for FX, but auto-fallback if no bars arrive.
+    live_sources = params.get('IB_LIVE_WHAT_TO_SHOW_FALLBACKS', ['MIDPOINT', 'BID', 'ASK'])
+    if not isinstance(live_sources, (list, tuple)) or not live_sources:
+        live_sources = ['MIDPOINT', 'BID', 'ASK']
+    live_sources = [str(src).strip().upper() for src in live_sources if str(src).strip()]
+    if not live_sources:
+        live_sources = ['MIDPOINT', 'BID', 'ASK']
+
+    logger.info(
+        f"Live real-time bars subscription settings: useRTH={use_rth_live} | "
+        f"fallback_sources={live_sources}")
+
+    source_index = 0
+    current_live_source = live_sources[source_index]
+
+    def _subscribe_realtime_bars(what_to_show: str):
+        bars_handle = ib.reqRealTimeBars(contract, 5, what_to_show, use_rth_live)
+        bars_handle.updateEvent += on_bar_update
+        return bars_handle
+
+    live_bars = _subscribe_realtime_bars(current_live_source)
+    logger.info(f"Subscribed real-time bars with whatToShow={current_live_source}")
+    subscription_started_at = datetime.now(timezone.utc)
 
     try:
         while ib.isConnected():
+            # Watchdog: if no bars arrive shortly after subscription, switch source and retry.
+            if live_bar_count == 0:
+                elapsed = (datetime.now(timezone.utc) - subscription_started_at).total_seconds()
+                if elapsed > first_bar_timeout_seconds:
+                    logger.warning(f"No live bars received within {first_bar_timeout_seconds}s using {current_live_source}.")
+                    if live_bars:
+                        ib.cancelRealTimeBars(live_bars)
+
+                    if source_index + 1 < len(live_sources):
+                        source_index += 1
+                        current_live_source = live_sources[source_index]
+                    logger.info(f"Re-subscribing real-time bars with whatToShow={current_live_source}")
+                    live_bars = _subscribe_realtime_bars(current_live_source)
+                    subscription_started_at = datetime.now(timezone.utc)
             await asyncio.sleep(1)
     except asyncio.CancelledError:
         logger.info("run_bot loop cancelled.")
