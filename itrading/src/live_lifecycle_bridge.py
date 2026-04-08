@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+from zoneinfo import ZoneInfo
 
 
 TERMINAL_ORDER_STATES = {"FILLED", "CANCELLED", "INACTIVE", "API_CANCELLED", "REJECTED"}
+SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_TIMEZONE = "America/New_York"
+SNAPSHOT_TYPE = "5-minute instrument snapshot"
 
 
 @dataclass
@@ -44,6 +48,7 @@ class LiveLifecycleBridge:
         self._next_trade_id = 1
         self.trades: Dict[str, LiveTradeState] = {}
         self.order_to_trade: Dict[int, str] = {}
+        self.order_book: Dict[int, Dict[str, Any]] = {}
         # Track IB execIds already processed so reconciliation never double-counts.
         self._tracked_exec_ids: Set[str] = set()
         self.stats = {
@@ -97,6 +102,7 @@ class LiveLifecycleBridge:
             "pip_value": self.pip_value,
             "stats": dict(self.stats),
             "order_to_trade": {str(k): v for k, v in self.order_to_trade.items()},
+            "order_book": {str(k): dict(v) for k, v in self.order_book.items()},
             "tracked_exec_ids": list(self._tracked_exec_ids),
             "trades": trades_data,
         }
@@ -131,7 +137,9 @@ class LiveLifecycleBridge:
 
         try:
             with open(path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
+                raw_data = json.load(fh)
+
+            data = dict(raw_data.get("bridge_runtime") or raw_data)
 
             pip_value = float(data.get("pip_value", 0.0001))
             bridge = cls(logger=logger, pip_value=pip_value)
@@ -148,6 +156,12 @@ class LiveLifecycleBridge:
                     bridge.order_to_trade[int(oid_str)] = tid
                 except (ValueError, TypeError):
                     pass
+
+            for oid_str, order_state in (data.get("order_book") or {}).items():
+                try:
+                    bridge.order_book[int(oid_str)] = dict(order_state or {})
+                except (ValueError, TypeError):
+                    continue
 
             # tracked_exec_ids
             for eid in data.get("tracked_exec_ids") or []:
@@ -399,9 +413,9 @@ class LiveLifecycleBridge:
         state.stop_loss_order_id = int(stop_loss_order_id)
         state.status = "SUBMITTED"
 
-        parent_id = int(state.parent_order_id)
-        tp_id = int(state.take_profit_order_id)
-        sl_id = int(state.stop_loss_order_id)
+        parent_id = int(state.parent_order_id or 0)
+        tp_id = int(state.take_profit_order_id or 0)
+        sl_id = int(state.stop_loss_order_id or 0)
         self.order_to_trade[parent_id] = trade_id
         self.order_to_trade[tp_id] = trade_id
         self.order_to_trade[sl_id] = trade_id
@@ -409,6 +423,63 @@ class LiveLifecycleBridge:
         self.logger.info(
             f"[LIVE-BRIDGE] Bracket mapped {trade_id} | parent={state.parent_order_id} "
             f"tp={state.take_profit_order_id} sl={state.stop_loss_order_id}")
+
+    def sync_order_metadata(
+        self,
+        trade_id: str,
+        symbol: str,
+        parent_order_id: int,
+        take_profit_order_id: int,
+        stop_loss_order_id: int,
+        action: str,
+        quantity: float,
+        tif: str,
+        take_profit_price: float,
+        stop_loss_price: float,
+    ) -> None:
+        """Record full IB bracket metadata so snapshots can print daily/open orders."""
+        pair = str(symbol or "").strip().upper()
+        opposite_action = "SELL" if str(action).upper() == "BUY" else "BUY"
+
+        self._upsert_order_record(
+            int(parent_order_id),
+            trade_id=trade_id,
+            symbol=pair,
+            action=str(action or "").upper(),
+            order_type="MKT",
+            quantity=float(quantity or 0.0),
+            tif="IOC",
+            parent_id=0,
+            limit_price=None,
+            stop_price=None,
+            status="SUBMITTED",
+        )
+        self._upsert_order_record(
+            int(take_profit_order_id),
+            trade_id=trade_id,
+            symbol=pair,
+            action=opposite_action,
+            order_type="LMT",
+            quantity=float(quantity or 0.0),
+            tif=str(tif or "").upper(),
+            parent_id=int(parent_order_id),
+            limit_price=float(take_profit_price or 0.0),
+            stop_price=None,
+            status="SUBMITTED",
+        )
+        self._upsert_order_record(
+            int(stop_loss_order_id),
+            trade_id=trade_id,
+            symbol=pair,
+            action=opposite_action,
+            order_type="STP",
+            quantity=float(quantity or 0.0),
+            tif=str(tif or "").upper(),
+            parent_id=int(parent_order_id),
+            limit_price=None,
+            stop_price=float(stop_loss_price or 0.0),
+            status="PRESUBMITTED",
+        )
 
     def on_order_status(
         self,
@@ -432,6 +503,17 @@ class LiveLifecycleBridge:
         self.logger.info(
             f"[LIVE-BRIDGE] order_status | trade={trade.trade_id} order_id={order_id} status={normalized_status} "
             f"filled={filled} remaining={remaining} avg={avg_fill_price} last={last_fill_price}")
+
+        self._upsert_order_record(
+            int(order_id),
+            trade_id=trade.trade_id,
+            symbol=trade.symbol,
+            status=normalized_status,
+            filled=float(filled or 0.0),
+            remaining=float(remaining or 0.0),
+            avg_fill_price=float(avg_fill_price or 0.0),
+            last_fill_price=float(last_fill_price or 0.0),
+        )
 
         fill_price = float(avg_fill_price or last_fill_price or 0.0)
 
@@ -473,6 +555,14 @@ class LiveLifecycleBridge:
         if trade is None:
             return
 
+        self._upsert_order_record(
+            int(order_id),
+            trade_id=trade.trade_id,
+            symbol=trade.symbol,
+            filled=float(quantity or 0.0),
+            last_fill_price=float(price or 0.0),
+        )
+
         if commission not in (None, 0, 0.0):
             self._apply_trade_commission(trade, float(commission))
 
@@ -493,14 +583,14 @@ class LiveLifecycleBridge:
 
         gross_profit = float(self.stats["gross_profit"])
         gross_loss = float(self.stats["gross_loss"])
-        trades = int(self.stats["trades"])
+        trade_count = int(self.stats["trades"])
         wins = int(self.stats["wins"])
         losses = int(self.stats["losses"])
         commission_total = float(self.stats.get("commission_total", 0.0))
         net_pnl = float(self.stats.get("net_pnl", gross_profit - gross_loss - commission_total))
 
         return {
-            "trades": trades,
+            "trades": trade_count,
             "wins": wins,
             "losses": losses,
             "gross_profit": gross_profit,
@@ -509,11 +599,145 @@ class LiveLifecycleBridge:
             "entries_filled": int(sum(1 for t in self.trades.values() if t.entry_price is not None)),
             "closed_trades": int(sum(1 for t in self.trades.values() if t.status == "CLOSED")),
             "open_trades": int(sum(1 for t in self.trades.values() if t.status in {"OPEN", "SUBMITTED", "PENDING_SUBMIT"})),
-            "win_rate": (wins / trades * 100.0) if trades else 0.0,
+            "win_rate": (wins / trade_count * 100.0) if trade_count else 0.0,
             "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else float("inf"),
             "commissions": commission_total,
             "net_pnl": net_pnl,
         }
+
+    def sync_open_orders_snapshot(self, symbol: str, open_orders: List[Dict[str, Any]]) -> None:
+        """Merge current IB open-order snapshot into the persisted local order book."""
+        pair = str(symbol or "").strip().upper()
+        for item in open_orders or []:
+            try:
+                order_id = int(item.get('order_id', 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if order_id <= 0:
+                continue
+
+            trade_id = self.order_to_trade.get(order_id)
+            self._upsert_order_record(
+                order_id,
+                trade_id=trade_id,
+                symbol=pair,
+                perm_id=int(item.get('perm_id', 0) or 0),
+                parent_id=int(item.get('parent_id', 0) or 0),
+                action=str(item.get('action', '') or '').upper(),
+                order_type=str(item.get('order_type', '') or '').upper(),
+                quantity=float(item.get('quantity', 0.0) or 0.0),
+                filled=float(item.get('filled', 0.0) or 0.0),
+                remaining=float(item.get('remaining', 0.0) or 0.0),
+                status=str(item.get('status', '') or '').upper(),
+                tif=str(item.get('tif', '') or '').upper(),
+                limit_price=float(item.get('lmt_price', 0.0) or 0.0) or None,
+                stop_price=float(item.get('aux_price', 0.0) or 0.0) or None,
+                local_symbol=str(item.get('local_symbol', '') or '').upper(),
+            )
+
+    def build_snapshot_document(
+        self,
+        instrument: str,
+        starting_capital_usd: float,
+        broker_snapshot: Optional[Dict[str, Any]] = None,
+        instrument_nlv: Optional[Dict[str, Any]] = None,
+        open_orders: Optional[List[Dict[str, Any]]] = None,
+        live_state_snapshot: Optional[Dict[str, Any]] = None,
+        last_processed_bar_dt: Optional[datetime] = None,
+        existing_snapshot: Optional[Dict[str, Any]] = None,
+        as_of_dt: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Build the persisted 5-minute snapshot document with DAY and LTD metrics."""
+        pair = str(instrument or '').strip().upper() or 'UNKNOWN'
+        existing_snapshot = dict(existing_snapshot or {})
+        as_of = self._as_utc_dt(as_of_dt)
+        session_start = self._session_start_utc(as_of)
+        current_nlv_usd = self._resolve_current_nlv_usd(starting_capital_usd, instrument_nlv, broker_snapshot)
+        current_nlv_base = self._resolve_current_nlv_base(instrument_nlv)
+
+        previous_day = dict(existing_snapshot.get('day') or {})
+        previous_session_start = self._parse_dt(previous_day.get('session_start_utc'))
+        same_day_session = previous_session_start == session_start
+
+        day_start_usd = self._safe_float(
+            previous_day.get('start_net_liq_usd'),
+            current_nlv_usd if current_nlv_usd is not None else starting_capital_usd,
+        ) if same_day_session else (current_nlv_usd if current_nlv_usd is not None else starting_capital_usd)
+        day_start_base = self._safe_float(previous_day.get('start_net_liq_base'), current_nlv_base) if same_day_session else current_nlv_base
+
+        daily_trades = self._daily_trade_records(session_start)
+        daily_orders = self._daily_order_records(session_start, pair)
+        ltd_trades = self._ltd_trade_records()
+        open_orders = list(open_orders or [])
+
+        day_metrics = self._build_metrics(
+            trades=daily_trades,
+            current_nlv_usd=current_nlv_usd,
+            start_value_usd=day_start_usd,
+        )
+        ltd_metrics = self._build_metrics(
+            trades=ltd_trades,
+            current_nlv_usd=current_nlv_usd,
+            start_value_usd=float(starting_capital_usd),
+        )
+
+        broker_section = {
+            'positions': list((broker_snapshot or {}).get('positions', [])),
+            'totals': {
+                'market_value_usd_total': self._safe_float((broker_snapshot or {}).get('market_value_usd_total'), 0.0),
+                'cost_basis_usd_total': self._safe_float((broker_snapshot or {}).get('cost_basis_usd_total'), 0.0),
+                'unrealized_pnl_usd_total': self._safe_float((broker_snapshot or {}).get('unrealized_pnl_usd_total'), 0.0),
+            },
+            'instrument_net_liq': {
+                'pair': (instrument_nlv or {}).get('pair', pair),
+                'base_currency': (instrument_nlv or {}).get('base_currency'),
+                'nlv_base': current_nlv_base,
+                'nlv_usd': current_nlv_usd,
+            },
+            'open_orders': open_orders,
+        }
+
+        snapshot = {
+            'schema_version': SNAPSHOT_SCHEMA_VERSION,
+            'snapshot_type': SNAPSHOT_TYPE,
+            'instrument': pair,
+            'timezone': SNAPSHOT_TIMEZONE,
+            'as_of_utc': self._dt_string(as_of),
+            'last_processed_bar_utc': self._dt_string(last_processed_bar_dt),
+            'starting_capital_usd': float(starting_capital_usd),
+            'strategy_state': dict(live_state_snapshot or {}),
+            'day': {
+                'session_start_utc': self._dt_string(session_start),
+                'start_net_liq_usd': day_start_usd,
+                'start_net_liq_base': day_start_base,
+                'metrics': day_metrics,
+                'orders': daily_orders,
+                'trades': daily_trades,
+            },
+            'ltd': {
+                'starting_capital_usd': float(starting_capital_usd),
+                'metrics': ltd_metrics,
+            },
+            'broker': broker_section,
+            'bridge_runtime': self.to_dict(),
+        }
+        return snapshot
+
+    def save_snapshot_file(self, path, snapshot_document: Dict[str, Any]) -> bool:
+        """Persist the 5-minute snapshot document to disk."""
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as fh:
+                json.dump(snapshot_document, fh, indent=2)
+            self.logger.info(
+                f"[SNAPSHOT] Saved → {path} "
+                f"(instrument={snapshot_document.get('instrument')} day_closed={snapshot_document.get('day', {}).get('metrics', {}).get('trades_closed', 0)} "
+                f"ltd_closed={snapshot_document.get('ltd', {}).get('metrics', {}).get('trades_closed', 0)})"
+            )
+            return True
+        except Exception as exc:
+            self.logger.warning(f"[SNAPSHOT] Could not save snapshot to {path}: {exc}")
+            return False
 
     def _get_trade_by_order_id(self, order_id: int) -> Optional[LiveTradeState]:
         trade_id = self.order_to_trade.get(int(order_id))
@@ -533,6 +757,17 @@ class LiveLifecycleBridge:
         trade.entry_price = float(fill_price)
         trade.filled_size = abs(float(fill_qty or trade.intended_size))
         trade.status = "OPEN"
+        if trade.parent_order_id:
+            self._upsert_order_record(
+                int(trade.parent_order_id),
+                trade_id=trade.trade_id,
+                symbol=trade.symbol,
+                status='FILLED',
+                filled=trade.filled_size,
+                remaining=0.0,
+                avg_fill_price=trade.entry_price,
+                last_fill_price=trade.entry_price,
+            )
 
         self.logger.info(
             f"[LIVE-BRIDGE] ENTRY FILLED {trade.trade_id} | {trade.direction} {trade.filled_size} {trade.symbol} "
@@ -559,13 +794,28 @@ class LiveLifecycleBridge:
         trade.exit_reason = reason
         trade.status = "CLOSED"
 
+        exit_order_id = trade.take_profit_order_id if reason == 'TAKE_PROFIT' else trade.stop_loss_order_id
+        if exit_order_id:
+            self._upsert_order_record(
+                int(exit_order_id),
+                trade_id=trade.trade_id,
+                symbol=trade.symbol,
+                status='FILLED',
+                filled=abs(float(fill_qty or trade.filled_size or trade.intended_size)),
+                remaining=0.0,
+                avg_fill_price=trade.exit_price,
+                last_fill_price=trade.exit_price,
+            )
+
         size = abs(float(fill_qty or trade.filled_size or trade.intended_size))
+        entry_price = float(trade.entry_price or 0.0)
+        exit_price = float(trade.exit_price or 0.0)
         if trade.direction == "LONG":
-            gross_pnl = (trade.exit_price - trade.entry_price) * size
-            pips = (trade.exit_price - trade.entry_price) / self.pip_value
+            gross_pnl = (exit_price - entry_price) * size
+            pips = (exit_price - entry_price) / self.pip_value
         else:
-            gross_pnl = (trade.entry_price - trade.exit_price) * size
-            pips = (trade.entry_price - trade.exit_price) / self.pip_value
+            gross_pnl = (entry_price - exit_price) * size
+            pips = (entry_price - exit_price) / self.pip_value
 
         trade.gross_pnl = float(gross_pnl)
         trade.net_pnl = float(gross_pnl - float(trade.commission or 0.0))
@@ -647,4 +897,199 @@ class LiveLifecycleBridge:
             trade.net_pnl = gross - trade.commission
             trade.pnl = trade.net_pnl
             self._refresh_stats_from_trades()
+
+    @staticmethod
+    def _safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
+        if value in (None, ''):
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _as_utc_dt(value: Optional[datetime]) -> datetime:
+        if value is None:
+            return datetime.now(timezone.utc)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _dt_string(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        return LiveLifecycleBridge._as_utc_dt(value).isoformat()
+
+    @staticmethod
+    def _parse_dt(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _session_start_utc(self, as_of_dt: datetime) -> datetime:
+        local_tz = ZoneInfo(SNAPSHOT_TIMEZONE)
+        local_dt = self._as_utc_dt(as_of_dt).astimezone(local_tz)
+        session_anchor = local_dt.replace(hour=17, minute=0, second=0, microsecond=0)
+        if local_dt < session_anchor:
+            session_anchor -= timedelta(days=1)
+        return session_anchor.astimezone(timezone.utc)
+
+    def _upsert_order_record(self, order_id: int, **updates: Any) -> None:
+        if int(order_id or 0) <= 0:
+            return
+
+        now_iso = self._dt_string(datetime.now(timezone.utc))
+        record = dict(self.order_book.get(int(order_id), {}))
+        if not record:
+            record = {
+                'order_id': int(order_id),
+                'created_at': now_iso,
+            }
+
+        for key, value in updates.items():
+            if value is None:
+                continue
+            record[key] = value
+
+        record['updated_at'] = now_iso
+        status = str(record.get('status', '') or '').upper()
+        if status in TERMINAL_ORDER_STATES and not record.get('terminal_at'):
+            record['terminal_at'] = now_iso
+        self.order_book[int(order_id)] = record
+
+    def _trade_touched_since(self, trade: LiveTradeState, session_start: datetime) -> bool:
+        checkpoints = [trade.decision_time, trade.entry_time, trade.exit_time]
+        for checkpoint in checkpoints:
+            if checkpoint is not None and self._as_utc_dt(checkpoint) >= session_start:
+                return True
+        return trade.status != 'CLOSED'
+
+    def _daily_trade_records(self, session_start: datetime) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for trade in self.trades.values():
+            if not self._trade_touched_since(trade, session_start):
+                continue
+            rows.append(self._trade_record(trade))
+        rows.sort(key=lambda row: (row.get('decision_time') or '', row.get('trade_id') or ''))
+        return rows
+
+    def _ltd_trade_records(self) -> List[Dict[str, Any]]:
+        rows = [self._trade_record(trade) for trade in self.trades.values()]
+        rows.sort(key=lambda row: (row.get('decision_time') or '', row.get('trade_id') or ''))
+        return rows
+
+    def _trade_record(self, trade: LiveTradeState) -> Dict[str, Any]:
+        return {
+            'trade_id': trade.trade_id,
+            'symbol': trade.symbol,
+            'direction': trade.direction,
+            'status': trade.status,
+            'parent_order_id': trade.parent_order_id,
+            'take_profit_order_id': trade.take_profit_order_id,
+            'stop_loss_order_id': trade.stop_loss_order_id,
+            'decision_time': self._dt_string(trade.decision_time),
+            'entry_time': self._dt_string(trade.entry_time),
+            'exit_time': self._dt_string(trade.exit_time),
+            'entry_price': trade.entry_price,
+            'exit_price': trade.exit_price,
+            'filled_size': trade.filled_size,
+            'intended_size': trade.intended_size,
+            'stop_loss': trade.stop_loss,
+            'take_profit': trade.take_profit,
+            'exit_reason': trade.exit_reason,
+            'gross_pnl': trade.gross_pnl,
+            'commission': trade.commission,
+            'net_pnl': trade.net_pnl if trade.net_pnl is not None else trade.pnl,
+        }
+
+    def _daily_order_records(self, session_start: datetime, instrument: str) -> List[Dict[str, Any]]:
+        pair = str(instrument or '').strip().upper()
+        rows: List[Dict[str, Any]] = []
+        for record in self.order_book.values():
+            symbol = str(record.get('symbol', '') or '').strip().upper()
+            if pair and symbol and symbol != pair:
+                continue
+
+            status = str(record.get('status', '') or '').upper()
+            terminal_at = self._parse_dt(record.get('terminal_at'))
+            updated_at = self._parse_dt(record.get('updated_at'))
+            created_at = self._parse_dt(record.get('created_at'))
+            is_open = status not in TERMINAL_ORDER_STATES
+            touched_today = any(dt is not None and dt >= session_start for dt in (terminal_at, updated_at, created_at))
+            if not is_open and not touched_today:
+                continue
+            rows.append(dict(record))
+
+        rows.sort(key=lambda row: (row.get('created_at') or '', row.get('order_id') or 0))
+        return rows
+
+    def _build_metrics(self, trades: List[Dict[str, Any]], current_nlv_usd: Optional[float], start_value_usd: Optional[float]) -> Dict[str, Any]:
+        closed = [trade for trade in trades if str(trade.get('status', '')).upper() == 'CLOSED']
+        entries_filled = sum(1 for trade in trades if self._safe_float(trade.get('filled_size'), 0.0) > 0)
+        open_trades = sum(1 for trade in trades if str(trade.get('status', '')).upper() in {'OPEN', 'SUBMITTED', 'PENDING_SUBMIT'})
+
+        gross_profit = 0.0
+        gross_loss = 0.0
+        commissions = 0.0
+        wins = 0
+        losses = 0
+
+        for trade in closed:
+            gross = self._safe_float(trade.get('gross_pnl'), 0.0) or 0.0
+            commission = self._safe_float(trade.get('commission'), 0.0) or 0.0
+            net = self._safe_float(trade.get('net_pnl'), gross - commission) or 0.0
+            commissions += commission
+            if gross >= 0:
+                gross_profit += gross
+            else:
+                gross_loss += abs(gross)
+            if net >= 0:
+                wins += 1
+            else:
+                losses += 1
+
+        trades_closed = len(closed)
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
+        net_realized_pnl = gross_profit - gross_loss - commissions
+        final_value_usd = current_nlv_usd if current_nlv_usd is not None else ((start_value_usd or 0.0) + net_realized_pnl)
+        total_pnl_usd = None
+        if start_value_usd is not None and final_value_usd is not None:
+            total_pnl_usd = final_value_usd - start_value_usd
+
+        return {
+            'trades_closed': trades_closed,
+            'entries_filled': entries_filled,
+            'wins': wins,
+            'losses': losses,
+            'win_rate': (wins / trades_closed * 100.0) if trades_closed else 0.0,
+            'profit_factor': profit_factor,
+            'gross_profit_usd': gross_profit,
+            'gross_loss_usd': gross_loss,
+            'commissions_usd': commissions,
+            'net_realized_pnl_usd': net_realized_pnl,
+            'open_trades': open_trades,
+            'start_value_usd': start_value_usd,
+            'final_value_usd': final_value_usd,
+            'total_pnl_usd': total_pnl_usd,
+        }
+
+    def _resolve_current_nlv_usd(self, starting_capital_usd: float, instrument_nlv: Optional[Dict[str, Any]], broker_snapshot: Optional[Dict[str, Any]]) -> Optional[float]:
+        if instrument_nlv and instrument_nlv.get('nlv_usd') is not None:
+            return float(instrument_nlv['nlv_usd'])
+        if broker_snapshot and broker_snapshot.get('market_value_usd_total') is not None:
+            return float(starting_capital_usd) + float(self.stats.get('net_pnl', 0.0) or 0.0) + float(broker_snapshot.get('unrealized_pnl_usd_total', 0.0) or 0.0)
+        return float(starting_capital_usd) + float(self.stats.get('net_pnl', 0.0) or 0.0)
+
+    @staticmethod
+    def _resolve_current_nlv_base(instrument_nlv: Optional[Dict[str, Any]]) -> Optional[float]:
+        if instrument_nlv and instrument_nlv.get('nlv_base') is not None:
+            return float(instrument_nlv['nlv_base'])
+        return None
 

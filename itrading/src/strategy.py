@@ -306,6 +306,7 @@ class ITradingStrategy(bt.Strategy):
         live_cutoff_dt=None,
         live_state_in=None,
         live_bridge_stats_in=None,
+        live_snapshot_in=None,
 
         # === STRATEGY BEHAVIOR ===
         enable_long_trades=True,
@@ -1100,6 +1101,8 @@ class ITradingStrategy(bt.Strategy):
             self.data_len = 0
             self.live_state_snapshot = {}
             self._load_live_state(self.p.live_state_in)
+            self.live_broker_snapshot = None
+            self.live_instrument_nlv = None
 
         # --- Lifecycle Logger ---
         self._first_next_logged = False
@@ -4141,6 +4144,106 @@ class ITradingStrategy(bt.Strategy):
         for label, value in normalized_rows:
             print(f"{indent}{label:<{label_width}} : {value}")
 
+    def _print_daily_snapshot_activity(self, live_snapshot):
+        """Print DAY-session orders/trades from snapshot, including open GTC orders."""
+        if not isinstance(live_snapshot, dict):
+            return
+
+        day_block = dict(live_snapshot.get('day') or {})
+        broker_block = dict(live_snapshot.get('broker') or {})
+        session_start = str(day_block.get('session_start_utc', 'n/a'))
+        day_orders = list(day_block.get('orders') or [])
+        day_trades = list(day_block.get('trades') or [])
+        open_orders = list(broker_block.get('open_orders') or [])
+
+        print(f"\n=== DAILY SNAPSHOT ACTIVITY (session start: {session_start}) ===")
+
+        print(f"DAY Orders (session total): {len(day_orders)}")
+        if day_orders:
+            print("  id   trade_id     parent side type qty     filled  rem     tif  price      status")
+            for order in day_orders:
+                order_type = str(order.get('order_type', '') or '').upper()
+                price = '-'
+                if order_type == 'LMT' and order.get('limit_price') not in (None, 0, 0.0):
+                    price = f"{float(order.get('limit_price', 0.0)):.5f}"
+                elif order_type == 'STP' and order.get('stop_price') not in (None, 0, 0.0):
+                    price = f"{float(order.get('stop_price', 0.0)):.5f}"
+
+                print(
+                    f"  {int(order.get('order_id', 0)):<4} {str(order.get('trade_id', '') or '-'): <12} {int(order.get('parent_id', 0)):<6} "
+                    f"{str(order.get('action', '') or '').upper():<4} {order_type:<4} "
+                    f"{float(order.get('quantity', 0.0) or 0.0):<7.0f} {float(order.get('filled', 0.0) or 0.0):<7.0f} "
+                    f"{float(order.get('remaining', 0.0) or 0.0):<7.0f} {(str(order.get('tif', '') or '').upper() or 'N/A'):<4} "
+                    f"{price:<10} {str(order.get('status', '') or '').upper()}")
+        else:
+            print("  none")
+
+        print(f"DAY Trades (session total): {len(day_trades)}")
+        if day_trades:
+            print("  trade_id     ord(parent/tp/sl)     dir   status   size     entry      exit       net_pnl    reason")
+            for trade in day_trades:
+                net_pnl = float(trade.get('net_pnl', 0.0) or 0.0)
+                entry_price = trade.get('entry_price')
+                exit_price = trade.get('exit_price')
+                entry_text = f"{float(entry_price):.5f}" if entry_price not in (None, '') else '-'
+                exit_text = f"{float(exit_price):.5f}" if exit_price not in (None, '') else '-'
+                parent_id = int(trade.get('parent_order_id', 0) or 0)
+                tp_id = int(trade.get('take_profit_order_id', 0) or 0)
+                sl_id = int(trade.get('stop_loss_order_id', 0) or 0)
+                order_link = f"{parent_id or '-'} / {tp_id or '-'} / {sl_id or '-'}"
+                print(
+                    f"  {str(trade.get('trade_id', '') or ''):<12} {order_link:<22} {str(trade.get('direction', '') or '').upper():<5} "
+                    f"{str(trade.get('status', '') or '').upper():<8} {float(trade.get('filled_size', 0.0) or 0.0):<8.0f} "
+                    f"{entry_text:<10} {exit_text:<10} {net_pnl:+10.2f} {str(trade.get('exit_reason', '') or '-')}"
+                )
+        else:
+            print("  none")
+
+        open_gtc_orders = [
+            order for order in open_orders
+            if str(order.get('tif', '') or '').upper() == 'GTC'
+            and float(order.get('remaining', 0.0) or 0.0) > 0
+        ]
+        print(f"Open GTC Orders (live): {len(open_gtc_orders)}")
+        if open_gtc_orders:
+            print("  id   parent side type qty     rem     price      status")
+            for order in open_gtc_orders:
+                order_type = str(order.get('order_type', '') or '').upper()
+                price = '-'
+                lmt = order.get('lmt_price', order.get('limit_price'))
+                stp = order.get('aux_price', order.get('stop_price'))
+                if order_type == 'LMT' and lmt not in (None, 0, 0.0):
+                    price = f"{float(lmt):.5f}"
+                elif order_type == 'STP' and stp not in (None, 0, 0.0):
+                    price = f"{float(stp):.5f}"
+                print(
+                    f"  {int(order.get('order_id', 0)):<4} {int(order.get('parent_id', 0)):<6} "
+                    f"{str(order.get('action', '') or '').upper():<4} {order_type:<4} "
+                    f"{float(order.get('quantity', 0.0) or 0.0):<7.0f} {float(order.get('remaining', 0.0) or 0.0):<7.0f} "
+                    f"{price:<10} {str(order.get('status', '') or '').upper()}")
+        else:
+            print("  none")
+
+    def _print_day_ltd_rows(self, rows, indent='  '):
+        """Print DAY/LTD metrics in a readable two-column table."""
+        normalized_rows = []
+        for label, day_value, ltd_value in rows:
+            if label is None:
+                continue
+            normalized_rows.append((str(label), str(day_value), str(ltd_value)))
+
+        if not normalized_rows:
+            return
+
+        label_width = max(len(label) for label, _, _ in normalized_rows)
+        day_width = max(max(len(day_value) for _, day_value, _ in normalized_rows), len('DAY'))
+        ltd_width = max(max(len(ltd_value) for _, _, ltd_value in normalized_rows), len('LTD'))
+
+        print(f"{indent}{'Metric':<{label_width}}   {'DAY':>{day_width}}   {'LTD':>{ltd_width}}")
+        print(f"{indent}{'-' * label_width}   {'-' * day_width}   {'-' * ltd_width}")
+        for label, day_value, ltd_value in normalized_rows:
+            print(f"{indent}{label:<{label_width}}   {day_value:>{day_width}}   {ltd_value:>{ltd_width}}")
+
     def _print_broker_positions(self, snapshot=None):
         """Print broker positions for the configured instrument only."""
         base, quote, pair = self._instrument_pair()
@@ -4339,47 +4442,84 @@ class ITradingStrategy(bt.Strategy):
             adjusted_total_pnl = adjusted_final_value - starting_cash
 
         instrument_nlv = self._compute_instrument_net_liq(broker_snapshot)
+        self.live_broker_snapshot = broker_snapshot
+        self.live_instrument_nlv = instrument_nlv
 
         pf_text = f"{pf:.2f}" if math.isfinite(pf) else "inf"
-        summary_rows = [
-            ("Trades (Closed/Entries)", f"{display_trades}"),
-            ("Wins", f"{display_wins}"),
-            ("Losses", f"{display_losses}"),
-            ("Win Rate", f"{wr:.2f}%"),
-            ("Profit Factor", pf_text),
-            ("Final Value (USD)", f"{final_value:,.2f}"),
-            ("Total PnL (USD)", f"{total_pnl:+,.2f}"),
-        ]
+        live_snapshot = self.p.live_snapshot_in if (self.p.live_trading and isinstance(self.p.live_snapshot_in, dict)) else None
+        day_metrics = dict(((live_snapshot or {}).get('day') or {}).get('metrics') or {})
+        ltd_metrics = dict(((live_snapshot or {}).get('ltd') or {}).get('metrics') or {})
+        day_start_value = day_metrics.get('start_value_usd', starting_cash)
+        current_final_value = instrument_nlv['nlv_usd'] if instrument_nlv['nlv_usd'] is not None else final_value
+        current_total_pnl_ltd = current_final_value - starting_cash if current_final_value is not None else total_pnl
+        current_total_pnl_day = current_final_value - day_start_value if (current_final_value is not None and day_start_value is not None) else day_metrics.get('total_pnl_usd', total_pnl)
 
-        if self.p.live_trading and display_entries_filled is not None:
-            summary_rows.extend([
-                ("Live Entries Filled", f"{display_entries_filled}"),
-                ("Live Open Trades", f"{display_open_trades}"),
+        if self.p.live_trading and live_snapshot is not None:
+            day_trades_closed = int(day_metrics.get('trades_closed', 0))
+            day_entries_filled = int(day_metrics.get('entries_filled', display_entries_filled or 0))
+            day_wins = int(day_metrics.get('wins', 0))
+            day_losses = int(day_metrics.get('losses', 0))
+            day_win_rate = float(day_metrics.get('win_rate', 0.0) or 0.0)
+            day_pf = float(day_metrics.get('profit_factor', float('inf')) or float('inf'))
+            day_commissions = float(day_metrics.get('commissions_usd', 0.0) or 0.0)
+            ltd_trades_closed = int(ltd_metrics.get('trades_closed', display_trades))
+            ltd_entries_filled = int(ltd_metrics.get('entries_filled', display_entries_filled or display_trades))
+            ltd_wins = int(ltd_metrics.get('wins', display_wins))
+            ltd_losses = int(ltd_metrics.get('losses', display_losses))
+            ltd_win_rate = float(ltd_metrics.get('win_rate', wr) or 0.0)
+            ltd_pf = float(ltd_metrics.get('profit_factor', pf) or 0.0)
+            ltd_commissions = float(ltd_metrics.get('commissions_usd', live_commissions) or 0.0)
+            ltd_open_trades = int(ltd_metrics.get('open_trades', display_open_trades or 0))
+            day_open_trades = int(day_metrics.get('open_trades', display_open_trades or 0))
+
+            def _pf_text(value):
+                return f"{value:.2f}" if math.isfinite(value) else "inf"
+
+            self._print_day_ltd_rows([
+                ("Trades (Closed)", f"{day_trades_closed}", f"{ltd_trades_closed}"),
+                ("Entries Filled", f"{day_entries_filled}", f"{ltd_entries_filled}"),
+                ("Wins", f"{day_wins}", f"{ltd_wins}"),
+                ("Losses", f"{day_losses}", f"{ltd_losses}"),
+                ("Win Rate", f"{day_win_rate:.2f}%", f"{ltd_win_rate:.2f}%"),
+                ("Profit Factor", _pf_text(day_pf), _pf_text(ltd_pf)),
+                ("Commissions (USD)", f"{day_commissions:+,.2f}", f"{ltd_commissions:+,.2f}"),
+                ("Open Trades", f"{day_open_trades}", f"{ltd_open_trades}"),
+                ("Start Value (USD)", f"{day_start_value:,.2f}", f"{starting_cash:,.2f}"),
+                ("Current Final Value (USD)", f"{current_final_value:,.2f}", f"{current_final_value:,.2f}"),
+                ("Total PnL (USD)", f"{current_total_pnl_day:+,.2f}", f"{current_total_pnl_ltd:+,.2f}"),
             ])
-            if live_bridge_stats is not None:
-                summary_rows.append(("Commissions (USD)", f"{live_commissions:+,.2f}"))
-
-        if broker_snapshot.get('has_usd_valuation'):
-            summary_rows.extend([
-                (f"Adjusted Final Value (incl {broker_snapshot['pair']})", f"{adjusted_final_value:,.2f}"),
-                ("Adjusted Total PnL (USD)", f"{adjusted_total_pnl:+,.2f}"),
-                (f"Broker {broker_snapshot['pair']} MktValue (USD)", f"{broker_snapshot['market_value_usd_total']:+,.2f}"),
-                (f"Broker {broker_snapshot['pair']} UnrealPnL (USD)", f"{broker_snapshot['unrealized_pnl_usd_total']:+,.2f}"),
-            ])
-
-        if instrument_nlv['nlv_base'] is not None and instrument_nlv['nlv_usd'] is not None:
-            summary_rows.append((
-                f"Instrument NetLiq ({instrument_nlv['pair']})",
-                f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']} | {instrument_nlv['nlv_usd']:+,.2f} USD",
-            ))
-        elif instrument_nlv['nlv_usd'] is not None:
-            summary_rows.append((f"Instrument NetLiq ({instrument_nlv['pair']})", f"{instrument_nlv['nlv_usd']:+,.2f} USD"))
-        elif instrument_nlv['nlv_base'] is not None:
-            summary_rows.append((f"Instrument NetLiq ({instrument_nlv['pair']})", f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']}"))
         else:
-            summary_rows.append((f"Instrument NetLiq ({instrument_nlv['pair']})", "N/A"))
+            summary_rows = [
+                ("Trades (Closed/Entries)", f"{display_trades}"),
+                ("Wins", f"{display_wins}"),
+                ("Losses", f"{display_losses}"),
+                ("Win Rate", f"{wr:.2f}%"),
+                ("Profit Factor", pf_text),
+                ("Final Value (USD)", f"{final_value:,.2f}"),
+                ("Total PnL (USD)", f"{total_pnl:+,.2f}"),
+            ]
+            if self.p.live_trading and display_entries_filled is not None:
+                summary_rows.extend([
+                    ("Live Entries Filled", f"{display_entries_filled}"),
+                    ("Live Open Trades", f"{display_open_trades}"),
+                ])
+                if live_bridge_stats is not None:
+                    summary_rows.append(("Commissions (USD)", f"{live_commissions:+,.2f}"))
+            self._print_aligned_rows(summary_rows)
 
-        self._print_aligned_rows(summary_rows)
+        if self.p.live_trading and isinstance(live_snapshot, dict):
+            self._print_daily_snapshot_activity(live_snapshot)
+
+        instrument_nlv_label = "N/A"
+        if instrument_nlv['nlv_base'] is not None and instrument_nlv['nlv_usd'] is not None:
+            instrument_nlv_label = f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']} | {instrument_nlv['nlv_usd']:+,.2f} USD"
+        elif instrument_nlv['nlv_usd'] is not None:
+            instrument_nlv_label = f"{instrument_nlv['nlv_usd']:+,.2f} USD"
+        elif instrument_nlv['nlv_base'] is not None:
+            instrument_nlv_label = f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']}"
+        self._print_aligned_rows([
+            (f"Instrument NetLiq ({instrument_nlv['pair']})", instrument_nlv_label)
+        ])
 
         # Include broker position details if connection is available
         self._print_broker_positions(snapshot=broker_snapshot)

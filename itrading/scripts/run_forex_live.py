@@ -20,16 +20,22 @@ from itrading.src.live_lifecycle_bridge import LiveLifecycleBridge
 from itrading.src.strategy import ITradingStrategyAUDUSD as DefaultITradingStrategy
 
 # ---------------------------------------------------------------------------
-# Bridge persistence: state is written here so it survives bot restarts.
-# The filename includes the instrument so multi-instrument runs stay separate.
+# 5-minute snapshot persistence: state is written here so it survives bot
+# restarts and acts as the per-instrument DAY/LTD master store.
 # ---------------------------------------------------------------------------
-_BRIDGE_STATE_DIR = Path(__file__).resolve().parent.parent / "config"
-_BRIDGE_STATE_FILE_TEMPLATE = "bridge_state_{instrument}.json"
+_SNAPSHOT_5_MINUTES_DIR = Path(__file__).resolve().parent.parent / "config"
+_SNAPSHOT_5_MINUTES_FILE_TEMPLATE = "snapshot_{instrument}.json"
+_LEGACY_BRIDGE_STATE_FILE_TEMPLATE = "bridge_state_{instrument}.json"
 
 
-def _bridge_state_path(instrument: str) -> Path:
-    name = _BRIDGE_STATE_FILE_TEMPLATE.format(instrument=str(instrument or "UNKNOWN").upper())
-    return _BRIDGE_STATE_DIR / name
+def _snapshot_5_minutes_path(instrument: str) -> Path:
+    name = _SNAPSHOT_5_MINUTES_FILE_TEMPLATE.format(instrument=str(instrument or "UNKNOWN").upper())
+    return _SNAPSHOT_5_MINUTES_DIR / name
+
+
+def _legacy_bridge_state_path(instrument: str) -> Path:
+    name = _LEGACY_BRIDGE_STATE_FILE_TEMPLATE.format(instrument=str(instrument or "UNKNOWN").upper())
+    return _SNAPSHOT_5_MINUTES_DIR / name
 
 # --- Strategy Resolution Defaults ---
 DEFAULT_STRATEGY_MODULE = 'itrading.src.strategy'
@@ -183,6 +189,9 @@ last_bt_cycle_summary: Optional[dict] = None
 active_strategy_class = DefaultITradingStrategy
 active_strategy_label = f"{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME}"
 active_forex_instrument = os.getenv('ITRADING_FOREX_INSTRUMENT', '').strip().upper() or None
+last_strategy_broker_snapshot: Optional[dict] = None
+last_strategy_instrument_nlv: Optional[dict] = None
+last_loaded_params: Optional[dict] = None
 
 
 class StrategyIBConnectionAdapter:
@@ -480,9 +489,116 @@ def _strategy_params_without_runtime_overrides(params: dict) -> dict:
     STRATEGY_PARAMS (otherwise Cerebro.addstrategy gets duplicate kwargs).
     """
     strategy_params = dict((params or {}).get('STRATEGY_PARAMS') or {})
-    for key in ('live_trading', 'signal_queue', 'live_cutoff_dt', 'live_state_in', 'ib_connection', 'live_bridge_stats_in'):
+    for key in ('live_trading', 'signal_queue', 'live_cutoff_dt', 'live_state_in', 'ib_connection', 'live_bridge_stats_in', 'live_snapshot_in'):
         strategy_params.pop(key, None)
     return strategy_params
+
+
+def _load_snapshot_document(instrument: str) -> dict:
+    """Load the current per-instrument 5-minute snapshot document when available."""
+    path = _snapshot_5_minutes_path(instrument)
+    if not path.exists():
+        return {}
+
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            loaded = json.load(fh)
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception as exc:
+        logger.warning(f"Could not load snapshot file for {instrument}: {exc}")
+        return {}
+
+
+def _save_snapshot_document(
+    params: Optional[dict] = None,
+    last_processed_bar_dt: Optional[datetime] = None,
+    broker_snapshot: Optional[dict] = None,
+    instrument_nlv: Optional[dict] = None,
+    open_orders: Optional[list[dict]] = None,
+    log_sections: bool = False,
+):
+    """Persist the enriched 5-minute snapshot document for the active instrument."""
+    global last_strategy_broker_snapshot, last_strategy_instrument_nlv
+
+    if live_lifecycle_bridge is None:
+        return
+
+    instrument = str(active_forex_instrument or '').strip().upper()
+    if not instrument:
+        return
+
+    runtime_params = params or last_loaded_params
+    if runtime_params is None:
+        try:
+            runtime_params = load_params()
+        except Exception:
+            runtime_params = None
+
+    starting_cash = _safe_float((runtime_params or {}).get('STARTING_CASH', 10000.0), 10000.0)
+    broker_snapshot = broker_snapshot or last_strategy_broker_snapshot or {}
+    instrument_nlv = instrument_nlv or last_strategy_instrument_nlv or {}
+    open_orders = list(open_orders or _get_open_orders_for_instrument(instrument))
+
+    live_lifecycle_bridge.sync_open_orders_snapshot(instrument, open_orders)
+
+    existing_snapshot = _load_snapshot_document(instrument)
+    snapshot_document = live_lifecycle_bridge.build_snapshot_document(
+        instrument=instrument,
+        starting_capital_usd=starting_cash,
+        broker_snapshot=broker_snapshot,
+        instrument_nlv=instrument_nlv,
+        open_orders=open_orders,
+        live_state_snapshot=live_strategy_state,
+        last_processed_bar_dt=last_processed_bar_dt or last_live_processed_dt,
+        existing_snapshot=existing_snapshot,
+        as_of_dt=last_processed_bar_dt or datetime.now(timezone.utc),
+    )
+    live_lifecycle_bridge.save_snapshot_file(_snapshot_5_minutes_path(instrument), snapshot_document)
+    if log_sections:
+        _log_snapshot_sections(snapshot_document)
+
+
+def _log_snapshot_sections(snapshot_document: dict):
+    """Print readable DAY snapshot sections for operations monitoring."""
+    if not isinstance(snapshot_document, dict):
+        return
+
+    instrument = str(snapshot_document.get('instrument', 'UNKNOWN') or 'UNKNOWN').upper()
+    day = dict(snapshot_document.get('day') or {})
+    broker = dict(snapshot_document.get('broker') or {})
+    trades = list(day.get('trades') or [])
+    orders = list(day.get('orders') or [])
+    open_orders = list(broker.get('open_orders') or [])
+
+    logger.info(
+        f"[{instrument}] Snapshot DAY activity | trades={len(trades)} orders={len(orders)} open_orders={len(open_orders)}"
+    )
+
+    if trades:
+        logger.info(f"[{instrument}] DAY trades (session since {day.get('session_start_utc', 'n/a')}):")
+        for trade in trades:
+            logger.info(
+                f"[{instrument}]   trade={trade.get('trade_id')} {trade.get('direction')} status={trade.get('status')} "
+                f"entry={trade.get('entry_price')} exit={trade.get('exit_price')} net={_safe_float(trade.get('net_pnl', 0.0), 0.0):+.2f} "
+                f"reason={trade.get('exit_reason') or '-'}")
+    else:
+        logger.info(f"[{instrument}] DAY trades: none")
+
+    if orders:
+        logger.info(f"[{instrument}] DAY orders (open + session terminal orders):")
+        for order in orders:
+            order_type = str(order.get('order_type', '') or '').upper()
+            price = '-'
+            if order_type == 'LMT' and order.get('limit_price') not in (None, 0, 0.0):
+                price = f"{_safe_float(order.get('limit_price'), 0.0):.5f}"
+            elif order_type == 'STP' and order.get('stop_price') not in (None, 0, 0.0):
+                price = f"{_safe_float(order.get('stop_price'), 0.0):.5f}"
+            logger.info(
+                f"[{instrument}]   order_id={order.get('order_id')} parent={order.get('parent_id', 0)} "
+                f"{str(order.get('action', '') or '').upper()} {order_type} qty={_safe_float(order.get('quantity', 0.0), 0.0):.0f} "
+                f"status={str(order.get('status', '') or '').upper()} tif={str(order.get('tif', '') or '').upper() or 'N/A'} price={price}")
+    else:
+        logger.info(f"[{instrument}] DAY orders: none")
 
 
 def _parse_signal_bar_time(signal: dict) -> Optional[datetime]:
@@ -520,14 +636,23 @@ def _is_signal_fresh(signal: dict, latest_live_dt: datetime, max_age_seconds: in
     return True, "ok"
 
 
-def _save_bridge_state():
-    """Persist bridge state to disk (no-op if bridge or instrument not set)."""
-    if live_lifecycle_bridge is None:
-        return
-    instrument = str(active_forex_instrument or '').strip().upper()
-    if not instrument:
-        return
-    live_lifecycle_bridge.save_to_file(_bridge_state_path(instrument))
+def _save_snapshot_5_minutes(
+    params: Optional[dict] = None,
+    last_processed_bar_dt: Optional[datetime] = None,
+    broker_snapshot: Optional[dict] = None,
+    instrument_nlv: Optional[dict] = None,
+    open_orders: Optional[list[dict]] = None,
+    log_sections: bool = False,
+):
+    """Persist the active 5-minute snapshot document to disk."""
+    _save_snapshot_document(
+        params=params,
+        last_processed_bar_dt=last_processed_bar_dt,
+        broker_snapshot=broker_snapshot,
+        instrument_nlv=instrument_nlv,
+        open_orders=open_orders,
+        log_sections=log_sections,
+    )
 
 
 def _on_ib_order_status_event(*args):
@@ -550,7 +675,7 @@ def _on_ib_order_status_event(*args):
         last_fill_price=_safe_float(getattr(status_obj, 'lastFillPrice', 0.0), 0.0),
     )
     # Persist after every status change so trade closure survives restart.
-    _save_bridge_state()
+    _save_snapshot_5_minutes()
 
 
 def _on_ib_exec_details_event(*args):
@@ -581,7 +706,7 @@ def _on_ib_exec_details_event(*args):
         commission=commission,
     )
     # Persist after every execution fill.
-    _save_bridge_state()
+    _save_snapshot_5_minutes()
 
 
 def _on_ib_error_event(*args):
@@ -991,6 +1116,7 @@ def load_params():
     2) ITRADING_PARAMS_PROFILE in {live,paper} -> parameters_live.json / parameters_paper.json
     3) legacy parameters.json
     """
+    global last_loaded_params
     config_dir = Path(__file__).resolve().parent.parent / 'config'
 
     explicit_path = os.getenv('ITRADING_PARAMS_FILE', '').strip()
@@ -1041,6 +1167,7 @@ def load_params():
         f"portfolio_policy_enabled={strategy_params.get('portfolio_policy_enabled', False)} "
         f"allocation_usd={strategy_params.get('instrument_capital_allocation_usd', 'n/a')} "
         f"risk_usd={strategy_params.get('portfolio_risk_amount_usd', 'n/a')}")
+    last_loaded_params = normalized
     return normalized
 
 async def execute_live_trade(contract, signal, params):
@@ -1095,6 +1222,18 @@ async def execute_live_trade(contract, signal, params):
                 take_profit_order_id=take_profit_order.orderId,
                 stop_loss_order_id=stop_loss_order.orderId,
             )
+            live_lifecycle_bridge.sync_order_metadata(
+                trade_id=bridge_trade_id,
+                symbol=bridge_symbol,
+                parent_order_id=parent_order_id,
+                take_profit_order_id=take_profit_order.orderId,
+                stop_loss_order_id=stop_loss_order.orderId,
+                action=action,
+                quantity=quantity,
+                tif=exit_tif,
+                take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
+            )
 
         logger.info(
             f"Placing bracket order: {action} {quantity} {contract.symbol} "
@@ -1108,7 +1247,7 @@ async def execute_live_trade(contract, signal, params):
             live_lifecycle_bridge.on_order_status(take_profit_order.orderId, 'SUBMITTED')
             live_lifecycle_bridge.on_order_status(stop_loss_order.orderId, 'SUBMITTED')
             # Persist immediately so order IDs survive a bot restart.
-            _save_bridge_state()
+            _save_snapshot_5_minutes(params=params)
     except Exception as e:
         logger.error(f"Error placing live order: {e}", exc_info=True)
 
@@ -1161,6 +1300,7 @@ async def run_strategy_on_live_bar(live_bars):
     4. No orders are placed here - only signals are generated
     """
     global historical_df, last_live_processed_dt, live_strategy_state, last_bt_cycle_summary
+    global last_strategy_broker_snapshot, last_strategy_instrument_nlv
     strategy_label = globals().get('active_strategy_label', f'{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME}')
     logger.info(f"--- Analyzing new 5-minute interval with {strategy_label} (Live Mode) ---")
     params = load_params()
@@ -1178,8 +1318,10 @@ async def run_strategy_on_live_bar(live_bars):
 
     latest_live_dt = live_df.index.max().to_pydatetime()
 
-    # Per requirement: print active IB open orders for this instrument before each 5-minute analysis cycle.
-    _log_open_orders_snapshot(params.get('FOREX_INSTRUMENT', ''))
+    instrument = str(params.get('FOREX_INSTRUMENT', '')).strip().upper()
+    cycle_open_orders = _get_open_orders_for_instrument(instrument)
+
+    # Keep open-order capture for snapshot persistence, but avoid duplicate pre-cycle logs.
 
     # =====================================================================
     # CRITICAL: Combine historical data with current live bar
@@ -1222,6 +1364,7 @@ async def run_strategy_on_live_bar(live_bars):
         signal_queue=signal_queue,
         live_cutoff_dt=last_live_processed_dt,
         live_state_in=live_strategy_state,
+        live_snapshot_in=_load_snapshot_document(instrument),
         ib_connection=_strategy_ib_connection(),
         live_bridge_stats_in=(live_lifecycle_bridge.get_stats_snapshot() if live_lifecycle_bridge is not None else None),
         **strategy_params
@@ -1235,6 +1378,8 @@ async def run_strategy_on_live_bar(live_bars):
         if run_results:
             strat = run_results[0]
             live_strategy_state = getattr(strat, 'live_state_snapshot', live_strategy_state)
+            last_strategy_broker_snapshot = getattr(strat, 'live_broker_snapshot', last_strategy_broker_snapshot)
+            last_strategy_instrument_nlv = getattr(strat, 'live_instrument_nlv', last_strategy_instrument_nlv)
 
             # Capture the most recent Backtrader-side snapshot for end-of-run dual summary.
             last_bt_cycle_summary = {
@@ -1284,7 +1429,6 @@ async def run_strategy_on_live_bar(live_bars):
 
             logger.info(f"✅ Signal received from strategy (fresh): {signal}")
 
-            instrument = str(params.get('FOREX_INSTRUMENT', '')).strip().upper()
             max_positions = _resolve_max_positions_per_symbol(params)
             open_order_slots = _count_open_order_slots_for_forex_pair(instrument)
             cap_blocked = open_order_slots >= max_positions
@@ -1310,12 +1454,21 @@ async def run_strategy_on_live_bar(live_bars):
             await execute_live_trade(contract, signal, params)
         else:
             logger.info("No signal generated in this analysis cycle (all conditions not met).")
+
+        _save_snapshot_5_minutes(
+            params=params,
+            last_processed_bar_dt=latest_live_dt,
+            broker_snapshot=last_strategy_broker_snapshot,
+            instrument_nlv=last_strategy_instrument_nlv,
+            open_orders=_get_open_orders_for_instrument(instrument) or cycle_open_orders,
+            log_sections=True,
+        )
     except Exception as e:
         logger.error(f"An error occurred during live strategy execution: {e}", exc_info=True)
 
 async def run_historical_analysis(params):
     """Runs the strategy on historical data to warm up and generate a report."""
-    global historical_df
+    global historical_df, last_strategy_broker_snapshot, last_strategy_instrument_nlv
     strategy_label = globals().get('active_strategy_label', f'{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME}')
     logger.info(f"--- Running {strategy_label} on historical data (no orders) to warm up... ---")
 
@@ -1352,7 +1505,18 @@ async def run_historical_analysis(params):
     
     cerebro.broker.setcash(params['STARTING_CASH'])
     
-    await asyncio.to_thread(cerebro.run)
+    run_results = await asyncio.to_thread(cerebro.run)
+    if run_results:
+        strat = run_results[0]
+        last_strategy_broker_snapshot = getattr(strat, 'live_broker_snapshot', last_strategy_broker_snapshot)
+        last_strategy_instrument_nlv = getattr(strat, 'live_instrument_nlv', last_strategy_instrument_nlv)
+
+    _save_snapshot_5_minutes(
+        params=params,
+        broker_snapshot=last_strategy_broker_snapshot,
+        instrument_nlv=last_strategy_instrument_nlv,
+        open_orders=_get_open_orders_for_instrument(params.get('FOREX_INSTRUMENT', '')),
+    )
     logger.info("--- Historical warm-up complete. A trade report has been generated. ---")
     return True
 
@@ -1376,15 +1540,25 @@ async def run_bot():
     pip_value = strategy_params.get('forex_pip_value', 0.0001)
 
     # -----------------------------------------------------------------
-    # 1. Try to restore bridge state from disk (survives bot restarts).
+    # 1. Try to restore snapshot / live bridge runtime from disk.
     # -----------------------------------------------------------------
-    state_path = _bridge_state_path(instrument)
-    if state_path.exists():
-        live_lifecycle_bridge = LiveLifecycleBridge.load_from_file(state_path, logger)
-        # Update pip_value from current config in case it changed.
-        live_lifecycle_bridge.pip_value = float(pip_value)
+    snapshot_path = _snapshot_5_minutes_path(instrument)
+    legacy_state_path = _legacy_bridge_state_path(instrument)
+    if snapshot_path.exists():
+        live_lifecycle_bridge = LiveLifecycleBridge.load_from_file(snapshot_path, logger)
+    elif legacy_state_path.exists():
+        logger.info(f"Migrating legacy bridge state from {legacy_state_path} into snapshot format for {instrument}.")
+        live_lifecycle_bridge = LiveLifecycleBridge.load_from_file(legacy_state_path, logger)
     else:
         live_lifecycle_bridge = LiveLifecycleBridge(logger=logger, pip_value=float(pip_value))
+
+    # Update pip_value from current config in case it changed.
+    live_lifecycle_bridge.pip_value = float(pip_value)
+
+    restored_snapshot = _load_snapshot_document(instrument)
+    restored_state = restored_snapshot.get('strategy_state') if isinstance(restored_snapshot, dict) else None
+    if isinstance(restored_state, dict) and restored_state:
+        live_strategy_state = restored_state
 
     await ib.connectAsync(params['IB_HOST'], params['IB_PORT'], clientId=params['IB_CLIENT_ID'])
     logger.info("✅ Connected to Interactive Brokers")
@@ -1403,7 +1577,7 @@ async def run_bot():
             added = live_lifecycle_bridge.reconcile_from_fills(fills, instrument)
             if added:
                 logger.info(f"[LIVE-BRIDGE] Startup reconciliation added {added} closed trade(s) from IB execution history.")
-                _save_bridge_state()
+                _save_snapshot_5_minutes(params=params)
             else:
                 logger.info("[LIVE-BRIDGE] Startup reconciliation: no new untracked fills found.")
         else:
@@ -1504,7 +1678,7 @@ async def run_bot():
                 f"losses={stats['losses']} win_rate={stats['win_rate']:.2f}% "
                 f"pf={stats['profit_factor']:.2f} net_pnl={stats['net_pnl']:.2f}")
             # Persist final state so the next session picks it up.
-            _save_bridge_state()
+            _save_snapshot_5_minutes(params=params)
 
 async def main():
     """Main entry point with graceful shutdown."""
