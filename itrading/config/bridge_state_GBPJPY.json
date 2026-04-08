@@ -1,0 +1,46 @@
+{
+  "_next_trade_id": 2,
+  "pip_value": 0.01,
+  "stats": {
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "gross_profit": 0.0,
+    "gross_loss": 0.0,
+    "commission_total": 0.0,
+    "net_pnl": 0.0
+  },
+  "order_to_trade": {
+    "53": "LIVE-000001",
+    "54": "LIVE-000001",
+    "55": "LIVE-000001"
+  },
+  "tracked_exec_ids": [
+    "0000e215.69d5afdf.01.01"
+  ],
+  "trades": {
+    "LIVE-000001": {
+      "trade_id": "LIVE-000001",
+      "symbol": "GBPJPY",
+      "direction": "LONG",
+      "intended_size": 4998.0,
+      "stop_loss": 212.54284527604722,
+      "take_profit": 213.51733523523106,
+      "decision_time": "2026-04-08T16:00:07.792448+00:00",
+      "parent_order_id": 53,
+      "take_profit_order_id": 54,
+      "stop_loss_order_id": 55,
+      "entry_time": "2026-04-08T16:00:07.977817+00:00",
+      "entry_price": 212.87,
+      "filled_size": 4998.0,
+      "exit_time": null,
+      "exit_price": null,
+      "exit_reason": null,
+      "pnl": null,
+      "gross_pnl": null,
+      "commission": 0.0,
+      "net_pnl": null,
+      "status": "OPEN"
+    }
+  }
+}

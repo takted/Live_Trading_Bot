@@ -1,0 +1,70 @@
+{
+  "_next_trade_id": 3,
+  "pip_value": 0.01,
+  "stats": {
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "gross_profit": 0.0,
+    "gross_loss": 0.0,
+    "commission_total": 0.0,
+    "net_pnl": 0.0
+  },
+  "order_to_trade": {
+    "49": "LIVE-000001",
+    "50": "LIVE-000001",
+    "51": "LIVE-000001",
+    "53": "LIVE-000002",
+    "54": "LIVE-000002",
+    "55": "LIVE-000002"
+  },
+  "tracked_exec_ids": [],
+  "trades": {
+    "LIVE-000001": {
+      "trade_id": "LIVE-000001",
+      "symbol": "EURJPY",
+      "direction": "LONG",
+      "intended_size": 5746.0,
+      "stop_loss": 184.95384413315378,
+      "take_profit": 185.62758771150013,
+      "decision_time": "2026-04-08T14:30:07.243327+00:00",
+      "parent_order_id": 49,
+      "take_profit_order_id": 50,
+      "stop_loss_order_id": 51,
+      "entry_time": "2026-04-08T14:30:07.808206+00:00",
+      "entry_price": 185.185,
+      "filled_size": 5746.0,
+      "exit_time": null,
+      "exit_price": null,
+      "exit_reason": null,
+      "pnl": null,
+      "gross_pnl": null,
+      "commission": 0.0,
+      "net_pnl": null,
+      "status": "OPEN"
+    },
+    "LIVE-000002": {
+      "trade_id": "LIVE-000002",
+      "symbol": "EURJPY",
+      "direction": "LONG",
+      "intended_size": 5746.0,
+      "stop_loss": 184.9491441331538,
+      "take_profit": 185.60118771150013,
+      "decision_time": "2026-04-08T14:45:07.326541+00:00",
+      "parent_order_id": 53,
+      "take_profit_order_id": 54,
+      "stop_loss_order_id": 55,
+      "entry_time": "2026-04-08T14:45:07.518739+00:00",
+      "entry_price": 185.16,
+      "filled_size": 5746.0,
+      "exit_time": null,
+      "exit_price": null,
+      "exit_reason": null,
+      "pnl": null,
+      "gross_pnl": null,
+      "commission": 0.0,
+      "net_pnl": null,
+      "status": "OPEN"
+    }
+  }
+}

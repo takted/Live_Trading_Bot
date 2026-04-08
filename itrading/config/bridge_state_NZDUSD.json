@@ -1,0 +1,38 @@
+{
+  "_next_trade_id": 2,
+  "pip_value": 0.0001,
+  "stats": {
+    "trades": 1,
+    "wins": 0,
+    "losses": 1,
+    "gross_profit": 0.0,
+    "gross_loss": 13.999449999999975
+  },
+  "order_to_trade": {},
+  "tracked_exec_ids": [
+    "0000e215.69d5a5a1.01.01",
+    "0000e215.69d5a3f5.01.01"
+  ],
+  "trades": {
+    "REC-000001": {
+      "trade_id": "REC-000001",
+      "symbol": "NZDUSD",
+      "direction": "LONG",
+      "intended_size": 6829.0,
+      "stop_loss": 0.0,
+      "take_profit": 0.0,
+      "decision_time": "2026-04-08T13:10:06+00:00",
+      "parent_order_id": null,
+      "take_profit_order_id": null,
+      "stop_loss_order_id": null,
+      "entry_time": "2026-04-08T13:10:06+00:00",
+      "entry_price": 0.5858,
+      "filled_size": 6829.0,
+      "exit_time": "2026-04-08T13:35:16+00:00",
+      "exit_price": 0.58375,
+      "exit_reason": "STOP_LOSS",
+      "pnl": -13.999449999999975,
+      "status": "CLOSED"
+    }
+  }
+}

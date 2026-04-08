@@ -1,0 +1,16 @@
+{
+  "_next_trade_id": 1,
+  "pip_value": 0.0001,
+  "stats": {
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "gross_profit": 0.0,
+    "gross_loss": 0.0,
+    "commission_total": 0.0,
+    "net_pnl": 0.0
+  },
+  "order_to_trade": {},
+  "tracked_exec_ids": [],
+  "trades": {}
+}
