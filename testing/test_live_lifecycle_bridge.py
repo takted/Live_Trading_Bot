@@ -40,6 +40,47 @@ class LiveLifecycleBridgeTests(unittest.TestCase):
         self.assertEqual(snapshot["losses"], 0)
         self.assertGreater(snapshot["gross_profit"], 0.0)
 
+    def test_commission_is_included_in_net_pnl(self):
+        logger = _DummyLogger()
+        bridge = LiveLifecycleBridge(logger=logger, pip_value=0.0001)
+
+        signal = {
+            "direction": "LONG",
+            "size": 10000,
+            "stop_loss": 0.6890,
+            "take_profit": 0.6910,
+        }
+        trade_id = bridge.register_signal("NZDUSD", signal)
+        bridge.register_bracket_orders(trade_id, parent_order_id=3001, take_profit_order_id=3002, stop_loss_order_id=3003)
+
+        bridge.on_execution(order_id=3001, price=0.6900, quantity=10000, exec_id="E1", commission=1.0)
+        bridge.on_execution(order_id=3002, price=0.6890, quantity=10000, exec_id="E2", commission=2.0)
+
+        snapshot = bridge.get_stats_snapshot()
+        self.assertEqual(snapshot["trades"], 1)
+        self.assertAlmostEqual(snapshot["gross_loss"], 10.0, places=6)
+        self.assertAlmostEqual(snapshot["commissions"], 3.0, places=6)
+        self.assertAlmostEqual(snapshot["net_pnl"], -13.0, places=6)
+
+    def test_duplicate_exec_id_does_not_double_count_commission(self):
+        logger = _DummyLogger()
+        bridge = LiveLifecycleBridge(logger=logger, pip_value=0.0001)
+
+        signal = {
+            "direction": "SHORT",
+            "size": 10000,
+            "stop_loss": 0.6910,
+            "take_profit": 0.6890,
+        }
+        trade_id = bridge.register_signal("AUDUSD", signal)
+        bridge.register_bracket_orders(trade_id, parent_order_id=4001, take_profit_order_id=4002, stop_loss_order_id=4003)
+
+        bridge.on_execution(order_id=4001, price=0.6900, quantity=10000, exec_id="X1", commission=1.25)
+        bridge.on_execution(order_id=4001, price=0.6900, quantity=10000, exec_id="X1", commission=1.25)
+
+        trade = bridge.trades[trade_id]
+        self.assertAlmostEqual(trade.commission, 1.25, places=6)
+
     def test_short_trade_stop_loss_counts_as_loss(self):
         logger = _DummyLogger()
         bridge = LiveLifecycleBridge(logger=logger, pip_value=0.0001)

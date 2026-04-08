@@ -305,6 +305,7 @@ class ITradingStrategy(bt.Strategy):
         signal_queue=None,
         live_cutoff_dt=None,
         live_state_in=None,
+        live_bridge_stats_in=None,
 
         # === STRATEGY BEHAVIOR ===
         enable_long_trades=True,
@@ -4074,11 +4075,13 @@ class ITradingStrategy(bt.Strategy):
             symbol = str(position.get('symbol', '') or '').strip().upper()
             currency = str(position.get('currency', '') or '').strip().upper()
             sec_type = str(position.get('secType', '') or '').strip().upper()
+            qty = float(position.get('position', 0.0) or 0.0)
 
             if symbol != base or currency != quote:
                 continue
 
-            qty = float(position.get('position', 0.0) or 0.0)
+            if abs(qty) <= 0.0:
+                continue
             avg_cost = float(position.get('avgCost', 0.0) or 0.0)
             quote_to_usd = self._quote_to_usd_rate(currency, current_price)
 
@@ -4120,44 +4123,6 @@ class ITradingStrategy(bt.Strategy):
                 'cost_basis_usd': cost_basis_usd,
                 'unrealized_pnl_usd': unrealized_pnl_usd,
             })
-
-        # Cash-only fallback: if no matched position exists, include base/quote cash balances
-        # for this instrument so NetLiq still reports meaningful values.
-        if not snapshot['positions'] and hasattr(self.p.ib_connection, 'get_cash_balances'):
-            try:
-                cash_balances = self.p.ib_connection.get_cash_balances() or {}
-            except Exception:
-                cash_balances = {}
-
-            if isinstance(cash_balances, dict):
-                base_cash = cash_balances.get(base)
-                quote_cash = cash_balances.get(quote)
-
-                try:
-                    base_cash = float(base_cash) if base_cash is not None else None
-                except (TypeError, ValueError):
-                    base_cash = None
-                try:
-                    quote_cash = float(quote_cash) if quote_cash is not None else None
-                except (TypeError, ValueError):
-                    quote_cash = None
-
-                snapshot['base_cash_balance'] = base_cash
-                snapshot['quote_cash_balance'] = quote_cash
-
-                if base_cash is not None:
-                    snapshot['has_base_valuation'] = True
-                    snapshot['market_value_base_total'] += base_cash
-                    base_to_usd = self._base_to_usd_rate(current_price)
-                    if base_to_usd is not None:
-                        snapshot['has_usd_valuation'] = True
-                        snapshot['market_value_usd_total'] += base_cash * base_to_usd
-
-                if quote_cash is not None:
-                    quote_to_usd = self._quote_to_usd_rate(quote, current_price)
-                    if quote_to_usd is not None:
-                        snapshot['has_usd_valuation'] = True
-                        snapshot['market_value_usd_total'] += quote_cash * quote_to_usd
 
         return snapshot
 
@@ -4280,8 +4245,39 @@ class ITradingStrategy(bt.Strategy):
         # Preserve live state before any end-of-run cleanup.
         self._persist_live_state_snapshot()
 
+        live_bridge_stats = self.p.live_bridge_stats_in if (self.p.live_trading and isinstance(self.p.live_bridge_stats_in, dict)) else None
+        display_trades = self.trades
+        display_wins = self.wins
+        display_losses = self.losses
+        display_gross_profit = self.gross_profit
+        display_gross_loss = self.gross_loss
+        display_entries_filled = None
+        display_open_trades = None
+        live_net_pnl = None
+        live_commissions = 0.0
+
+        if live_bridge_stats is not None:
+            display_trades = int(live_bridge_stats.get('trades', 0))
+            display_wins = int(live_bridge_stats.get('wins', 0))
+            display_losses = int(live_bridge_stats.get('losses', 0))
+            display_gross_profit = float(live_bridge_stats.get('gross_profit', 0.0))
+            display_gross_loss = float(live_bridge_stats.get('gross_loss', 0.0))
+            display_entries_filled = int(live_bridge_stats.get('entries_filled', 0))
+            display_open_trades = int(live_bridge_stats.get('open_trades', 0))
+            live_commissions = float(live_bridge_stats.get('commissions', 0.0) or 0.0)
+            live_net_pnl = float(live_bridge_stats.get('net_pnl', display_gross_profit - display_gross_loss - live_commissions))
+            # Live mode: include filled entries in displayed trade count even before exits close.
+            display_trades = max(display_trades, display_entries_filled)
+
         if self.p.lifecycle_logging:
-            self._tagged_print('LIFECYCLE', f"stop | trades={self.trades} | wins={self.wins} | losses={self.losses} | gross_profit={self.gross_profit:.2f} | gross_loss={self.gross_loss:.2f} | final_value={self.broker.get_value():.2f}")
+            lifecycle_line = (
+                f"stop | trades={display_trades} | wins={display_wins} | losses={display_losses} "
+                f"| gross_profit={display_gross_profit:.2f} | gross_loss={display_gross_loss:.2f} "
+                f"| final_value={self.broker.get_value():.2f}"
+            )
+            if self.p.live_trading and display_entries_filled is not None:
+                lifecycle_line += f" | entries_filled={display_entries_filled} | open_live={display_open_trades}"
+            self._tagged_print('LIFECYCLE', lifecycle_line)
 
         # Close any open positions at strategy end and manually process the trade
         if self.position:
@@ -4319,8 +4315,8 @@ class ITradingStrategy(bt.Strategy):
         # Enhanced summary calculation with debug stats.
         print("=== ITRADING SUMMARY ===")
 
-        wr = (self.wins / self.trades * 100.0) if self.trades else 0.0
-        pf = (self.gross_profit / self.gross_loss) if self.gross_loss > 0 else float('inf')
+        wr = (display_wins / display_trades * 100.0) if display_trades else 0.0
+        pf = (display_gross_profit / display_gross_loss) if display_gross_loss > 0 else float('inf')
 
         final_value = self.broker.get_value()
         starting_cash_raw = getattr(self.broker, 'startingcash', final_value)
@@ -4329,6 +4325,11 @@ class ITradingStrategy(bt.Strategy):
         except (TypeError, ValueError):
             starting_cash = float(final_value)
         total_pnl = final_value - starting_cash
+
+        if self.p.live_trading and live_net_pnl is not None:
+            # In live mode, Backtrader broker value does not include IB-managed realized fills.
+            total_pnl = live_net_pnl
+            final_value = starting_cash + total_pnl
 
         broker_snapshot = self._collect_instrument_broker_positions()
         adjusted_final_value = final_value
@@ -4341,14 +4342,22 @@ class ITradingStrategy(bt.Strategy):
 
         pf_text = f"{pf:.2f}" if math.isfinite(pf) else "inf"
         summary_rows = [
-            ("Trades", f"{self.trades}"),
-            ("Wins", f"{self.wins}"),
-            ("Losses", f"{self.losses}"),
+            ("Trades (Closed/Entries)", f"{display_trades}"),
+            ("Wins", f"{display_wins}"),
+            ("Losses", f"{display_losses}"),
             ("Win Rate", f"{wr:.2f}%"),
             ("Profit Factor", pf_text),
             ("Final Value (USD)", f"{final_value:,.2f}"),
             ("Total PnL (USD)", f"{total_pnl:+,.2f}"),
         ]
+
+        if self.p.live_trading and display_entries_filled is not None:
+            summary_rows.extend([
+                ("Live Entries Filled", f"{display_entries_filled}"),
+                ("Live Open Trades", f"{display_open_trades}"),
+            ])
+            if live_bridge_stats is not None:
+                summary_rows.append(("Commissions (USD)", f"{live_commissions:+,.2f}"))
 
         if broker_snapshot.get('has_usd_valuation'):
             summary_rows.extend([
@@ -4384,7 +4393,10 @@ class ITradingStrategy(bt.Strategy):
             success_rate = (self.successful_entry_count / self.entry_signal_count) * 100
             print(f"Block Rate: {block_rate:.1f}% | Success Rate: {success_rate:.1f}%")
 
-        calculated_pnl = self.gross_profit - self.gross_loss
+        calculated_pnl = (
+            live_net_pnl if (self.p.live_trading and live_net_pnl is not None)
+            else (display_gross_profit - display_gross_loss)
+        )
         pnl_diff = abs(calculated_pnl - total_pnl)
         if pnl_diff > 10.0:
             print(f"INFO: PnL difference: {pnl_diff:.2f} (calculated: {calculated_pnl:+.2f})")

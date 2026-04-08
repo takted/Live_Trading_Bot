@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import backtrader as bt
 import pandas as pd
-from ib_async import IB, Forex, util, Order
+from ib_async import IB, Forex, util, Order, ExecutionFilter
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -18,6 +18,18 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from itrading.src.logger import ITradingLogger
 from itrading.src.live_lifecycle_bridge import LiveLifecycleBridge
 from itrading.src.strategy import ITradingStrategyAUDUSD as DefaultITradingStrategy
+
+# ---------------------------------------------------------------------------
+# Bridge persistence: state is written here so it survives bot restarts.
+# The filename includes the instrument so multi-instrument runs stay separate.
+# ---------------------------------------------------------------------------
+_BRIDGE_STATE_DIR = Path(__file__).resolve().parent.parent / "config"
+_BRIDGE_STATE_FILE_TEMPLATE = "bridge_state_{instrument}.json"
+
+
+def _bridge_state_path(instrument: str) -> Path:
+    name = _BRIDGE_STATE_FILE_TEMPLATE.format(instrument=str(instrument or "UNKNOWN").upper())
+    return _BRIDGE_STATE_DIR / name
 
 # --- Strategy Resolution Defaults ---
 DEFAULT_STRATEGY_MODULE = 'itrading.src.strategy'
@@ -468,7 +480,7 @@ def _strategy_params_without_runtime_overrides(params: dict) -> dict:
     STRATEGY_PARAMS (otherwise Cerebro.addstrategy gets duplicate kwargs).
     """
     strategy_params = dict((params or {}).get('STRATEGY_PARAMS') or {})
-    for key in ('live_trading', 'signal_queue', 'live_cutoff_dt', 'live_state_in', 'ib_connection'):
+    for key in ('live_trading', 'signal_queue', 'live_cutoff_dt', 'live_state_in', 'ib_connection', 'live_bridge_stats_in'):
         strategy_params.pop(key, None)
     return strategy_params
 
@@ -508,6 +520,16 @@ def _is_signal_fresh(signal: dict, latest_live_dt: datetime, max_age_seconds: in
     return True, "ok"
 
 
+def _save_bridge_state():
+    """Persist bridge state to disk (no-op if bridge or instrument not set)."""
+    if live_lifecycle_bridge is None:
+        return
+    instrument = str(active_forex_instrument or '').strip().upper()
+    if not instrument:
+        return
+    live_lifecycle_bridge.save_to_file(_bridge_state_path(instrument))
+
+
 def _on_ib_order_status_event(*args):
     """Bridge IB order status events into normalized live lifecycle events."""
     if live_lifecycle_bridge is None or not args:
@@ -527,6 +549,8 @@ def _on_ib_order_status_event(*args):
         avg_fill_price=_safe_float(getattr(status_obj, 'avgFillPrice', 0.0), 0.0),
         last_fill_price=_safe_float(getattr(status_obj, 'lastFillPrice', 0.0), 0.0),
     )
+    # Persist after every status change so trade closure survives restart.
+    _save_bridge_state()
 
 
 def _on_ib_exec_details_event(*args):
@@ -539,11 +563,25 @@ def _on_ib_exec_details_event(*args):
     if execution is None:
         return
 
+    commission_report = getattr(fill_obj, 'commissionReport', None)
+    commission = None
+    if commission_report is not None:
+        raw_commission = getattr(commission_report, 'commission', None)
+        if raw_commission not in (None, ''):
+            commission = _safe_float(raw_commission, 0.0)
+            # Ignore IB unset sentinel-like values.
+            if abs(commission) > 1e9:
+                commission = None
+
     live_lifecycle_bridge.on_execution(
         order_id=_safe_int(getattr(execution, 'orderId', None), 0),
         price=_safe_float(getattr(execution, 'price', 0.0), 0.0),
         quantity=_safe_float(getattr(execution, 'shares', 0.0), 0.0),
+        exec_id=str(getattr(execution, 'execId', '') or '').strip() or None,
+        commission=commission,
     )
+    # Persist after every execution fill.
+    _save_bridge_state()
 
 
 def _on_ib_error_event(*args):
@@ -647,6 +685,169 @@ def _count_active_live_bridge_trades_for_pair(forex_pair: str) -> int:
             active_count += 1
 
     return active_count
+
+
+def _contract_matches_forex_pair(contract: Any, forex_pair: str) -> bool:
+    """Return True when an IB contract maps to the target forex pair (e.g. EURUSD)."""
+    pair = str(forex_pair or '').strip().upper()
+    if len(pair) < 6 or contract is None:
+        return False
+
+    base = pair[:3]
+    quote = pair[3:6]
+    symbol = str(getattr(contract, 'symbol', '') or '').upper()
+    currency = str(getattr(contract, 'currency', '') or '').upper()
+    sec_type = str(getattr(contract, 'secType', '') or '').upper()
+    local_symbol = str(getattr(contract, 'localSymbol', '') or '').upper().replace('.', '')
+
+    return (
+        (symbol == base and currency == quote and sec_type in {'CASH', 'FOREX', 'IDEALPRO'})
+        or local_symbol == pair
+    )
+
+
+def _get_open_orders_for_instrument(forex_pair: str) -> list[dict]:
+    """Fetch active (not terminal) IB orders for the requested instrument."""
+    if ib is None or not ib.isConnected():
+        return []
+
+    # Force-refresh open-order cache from TWS/Gateway before reading local openTrades.
+    try:
+        if hasattr(ib, 'reqOpenOrders'):
+            ib.reqOpenOrders()
+    except Exception as exc:
+        logger.warning(f"Open-order refresh request failed for {forex_pair}: {exc}")
+
+    try:
+        open_trades = ib.openTrades()
+    except Exception as exc:
+        logger.warning(f"Could not query IB open orders for {forex_pair}: {exc}")
+        return []
+
+    try:
+        open_order_ids = {
+            _safe_int(getattr(order, 'orderId', 0), 0)
+            for order in (ib.openOrders() or [])
+            if _safe_int(getattr(order, 'orderId', 0), 0) > 0
+        }
+    except Exception:
+        open_order_ids = set()
+
+    active_statuses = {
+        'APIPENDING',
+        'PENDINGSUBMIT',
+        'PENDINGCANCEL',
+        'PRESUBMITTED',
+        'SUBMITTED',
+    }
+    terminal_statuses = {'FILLED', 'CANCELLED', 'INACTIVE', 'APICANCELLED'}
+
+    snapshots: list[dict] = []
+    for trade in open_trades or []:
+        contract = getattr(trade, 'contract', None)
+        if not _contract_matches_forex_pair(contract, forex_pair):
+            continue
+
+        order = getattr(trade, 'order', None)
+        order_status = getattr(trade, 'orderStatus', None)
+        if order is None:
+            continue
+
+        order_id = _safe_int(getattr(order, 'orderId', 0), 0)
+        if open_order_ids and order_id not in open_order_ids:
+            # If TWS no longer reports this order as open, skip stale local snapshots.
+            continue
+
+        status = str(getattr(order_status, 'status', '') or '').upper()
+        status = status.replace('_', '')
+        filled = _safe_float(getattr(order_status, 'filled', 0.0), 0.0)
+        remaining = _safe_float(getattr(order_status, 'remaining', 0.0), 0.0)
+        is_active = (status in active_statuses and remaining > 0) or (status and status not in terminal_statuses and remaining > 0)
+        if not is_active:
+            continue
+
+        snapshots.append({
+            'order_id': order_id,
+            'perm_id': _safe_int(getattr(order, 'permId', 0), 0),
+            'parent_id': _safe_int(getattr(order, 'parentId', 0), 0),
+            'action': str(getattr(order, 'action', '') or '').upper(),
+            'order_type': str(getattr(order, 'orderType', '') or '').upper(),
+            'quantity': _safe_float(getattr(order, 'totalQuantity', 0.0), 0.0),
+            'filled': filled,
+            'remaining': remaining,
+            'status': status or 'UNKNOWN',
+            'lmt_price': _safe_float(getattr(order, 'lmtPrice', 0.0), 0.0),
+            'aux_price': _safe_float(getattr(order, 'auxPrice', 0.0), 0.0),
+            'tif': str(getattr(order, 'tif', '') or '').upper(),
+            'local_symbol': str(getattr(contract, 'localSymbol', '') or '').upper(),
+        })
+
+    snapshots.sort(key=lambda item: item['order_id'])
+    return snapshots
+
+
+def _log_open_orders_snapshot(forex_pair: str):
+    """Log a compact per-cycle snapshot of active IB open orders for one instrument."""
+    snapshots = _get_open_orders_for_instrument(forex_pair)
+    pair = str(forex_pair or '').strip().upper()
+
+    if not snapshots:
+        logger.info(f"Open orders before 5-min execution ({pair}): none")
+        return
+
+    status_counts: dict[str, int] = {}
+    for item in snapshots:
+        status = str(item.get('status', 'UNKNOWN') or 'UNKNOWN')
+        status_counts[status] = status_counts.get(status, 0) + 1
+    status_summary = ', '.join(f"{name}={count}" for name, count in sorted(status_counts.items()))
+
+    logger.info(f"Open orders before 5-min execution ({pair}): {len(snapshots)} [{status_summary}]")
+    logger.info("  id   parent perm_id      side type qty     filled  rem     tif  price      status")
+    for item in snapshots:
+        price_str = "-"
+        if item['order_type'] == 'LMT' and item['lmt_price'] > 0:
+            price_str = f"{item['lmt_price']:.5f}"
+        elif item['order_type'] == 'STP' and item['aux_price'] > 0:
+            price_str = f"{item['aux_price']:.5f}"
+
+        logger.info(
+            f"  {item['order_id']:<4} {item['parent_id']:<6} {item['perm_id']:<12} {item['action']:<4} {item['order_type']:<4} "
+            f"{item['quantity']:<7.0f} {item['filled']:<7.0f} {item['remaining']:<7.0f} "
+            f"{(item['tif'] or 'N/A'):<4} {price_str:<10} {item['status']}")
+
+
+def _count_open_order_slots_for_forex_pair(forex_pair: str) -> int:
+    """Count occupied trade slots from active open exit orders for one FX pair.
+
+    Rule: one active GTC exit bracket (LMT/STP pair linked by parentId) counts as one slot.
+    If a linked pair is temporarily incomplete, it still counts as one occupied slot.
+    """
+    snapshots = _get_open_orders_for_instrument(forex_pair)
+    if not snapshots:
+        return 0
+
+    eligible = [
+        item for item in snapshots
+        if item.get('tif') == 'GTC'
+        and item.get('order_type') in {'LMT', 'STP'}
+        and _safe_float(item.get('remaining', 0.0), 0.0) > 0
+    ]
+    if not eligible:
+        return 0
+
+    by_parent: dict[int, set[str]] = {}
+    unlinked_count = 0
+
+    for item in eligible:
+        parent_id = _safe_int(item.get('parent_id', 0), 0)
+        order_type = str(item.get('order_type', '') or '').upper()
+        if parent_id > 0:
+            by_parent.setdefault(parent_id, set()).add(order_type)
+        else:
+            # Rare/unlinked exits still occupy one slot each.
+            unlinked_count += 1
+
+    return len(by_parent) + unlinked_count
 
 
 def _resolve_max_positions_per_symbol(params: dict) -> int:
@@ -906,6 +1107,8 @@ async def execute_live_trade(contract, signal, params):
             live_lifecycle_bridge.on_order_status(parent_order_id, 'SUBMITTED')
             live_lifecycle_bridge.on_order_status(take_profit_order.orderId, 'SUBMITTED')
             live_lifecycle_bridge.on_order_status(stop_loss_order.orderId, 'SUBMITTED')
+            # Persist immediately so order IDs survive a bot restart.
+            _save_bridge_state()
     except Exception as e:
         logger.error(f"Error placing live order: {e}", exc_info=True)
 
@@ -975,6 +1178,9 @@ async def run_strategy_on_live_bar(live_bars):
 
     latest_live_dt = live_df.index.max().to_pydatetime()
 
+    # Per requirement: print active IB open orders for this instrument before each 5-minute analysis cycle.
+    _log_open_orders_snapshot(params.get('FOREX_INSTRUMENT', ''))
+
     # =====================================================================
     # CRITICAL: Combine historical data with current live bar
     # This preserves indicator warm-up from historical analysis
@@ -1017,6 +1223,7 @@ async def run_strategy_on_live_bar(live_bars):
         live_cutoff_dt=last_live_processed_dt,
         live_state_in=live_strategy_state,
         ib_connection=_strategy_ib_connection(),
+        live_bridge_stats_in=(live_lifecycle_bridge.get_stats_snapshot() if live_lifecycle_bridge is not None else None),
         **strategy_params
     )
 
@@ -1079,10 +1286,8 @@ async def run_strategy_on_live_bar(live_bars):
 
             instrument = str(params.get('FOREX_INSTRUMENT', '')).strip().upper()
             max_positions = _resolve_max_positions_per_symbol(params)
-            broker_slots = _count_open_broker_position_slots_for_forex_pair(instrument)
-            local_active_slots = _count_active_live_bridge_trades_for_pair(instrument)
-            effective_slots = max(broker_slots, local_active_slots)
-            cap_blocked = effective_slots >= max_positions
+            open_order_slots = _count_open_order_slots_for_forex_pair(instrument)
+            cap_blocked = open_order_slots >= max_positions
 
             signal_units = _safe_float(signal.get('size', 0.0), 0.0)
             latest_close = _safe_float(live_df['close'].iloc[-1], 0.0)
@@ -1091,14 +1296,13 @@ async def run_strategy_on_live_bar(live_bars):
             logger.info(
                 f"[SIGNAL-DIAG] {instrument} dir={signal.get('direction')} "
                 f"risk_budget_usd={risk_budget_usd:.2f} units={signal_units:,.0f} "
-                f"est_margin_usd={est_margin_usd:.2f} cap={effective_slots}/{max_positions} "
+                f"est_margin_usd={est_margin_usd:.2f} cap={open_order_slots}/{max_positions} "
                 f"decision={'BLOCKED' if cap_blocked else 'ALLOWED'}")
 
             if cap_blocked:
                 logger.info(
-                    f"Skipping order: position cap reached for {instrument} "
-                    f"(active_slots={effective_slots}, broker_slots={broker_slots}, "
-                    f"bridge_slots={local_active_slots}, max_positions={max_positions})")
+                    f"Skipping order: max open-order slot cap reached for {instrument} "
+                    f"(open_order_slots={open_order_slots}, max_positions={max_positions})")
                 return
 
             contract = Forex(params['FOREX_INSTRUMENT'])
@@ -1166,13 +1370,46 @@ async def run_bot():
     params = load_params()
     active_strategy_class, active_strategy_label = resolve_strategy_class(params)
     logger.info(f"Using strategy: {active_strategy_label}")
+    instrument = str(params.get('FOREX_INSTRUMENT', DEFAULT_FOREX_INSTRUMENT)).strip().upper() or DEFAULT_FOREX_INSTRUMENT
+    _set_logging_instrument(instrument)
     strategy_params = params.get('STRATEGY_PARAMS', {})
     pip_value = strategy_params.get('forex_pip_value', 0.0001)
-    live_lifecycle_bridge = LiveLifecycleBridge(logger=logger, pip_value=float(pip_value))
-    
+
+    # -----------------------------------------------------------------
+    # 1. Try to restore bridge state from disk (survives bot restarts).
+    # -----------------------------------------------------------------
+    state_path = _bridge_state_path(instrument)
+    if state_path.exists():
+        live_lifecycle_bridge = LiveLifecycleBridge.load_from_file(state_path, logger)
+        # Update pip_value from current config in case it changed.
+        live_lifecycle_bridge.pip_value = float(pip_value)
+    else:
+        live_lifecycle_bridge = LiveLifecycleBridge(logger=logger, pip_value=float(pip_value))
+
     await ib.connectAsync(params['IB_HOST'], params['IB_PORT'], clientId=params['IB_CLIENT_ID'])
     logger.info("✅ Connected to Interactive Brokers")
     _setup_ib_lifecycle_handlers()
+
+    # -----------------------------------------------------------------
+    # 2. Reconcile any executions IB already has that the bridge missed
+    #    (e.g., trades placed before this session / after a restart).
+    # -----------------------------------------------------------------
+    try:
+        ef = ExecutionFilter()
+        # Look back up to 7 days so recently closed trades are captured.
+        ef.time = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y%m%d-%H:%M:%S')
+        fills = await ib.reqExecutionsAsync(ef)
+        if fills:
+            added = live_lifecycle_bridge.reconcile_from_fills(fills, instrument)
+            if added:
+                logger.info(f"[LIVE-BRIDGE] Startup reconciliation added {added} closed trade(s) from IB execution history.")
+                _save_bridge_state()
+            else:
+                logger.info("[LIVE-BRIDGE] Startup reconciliation: no new untracked fills found.")
+        else:
+            logger.info("[LIVE-BRIDGE] Startup reconciliation: IB returned no execution history.")
+    except Exception as exc:
+        logger.warning(f"[LIVE-BRIDGE] Startup reconciliation failed (non-fatal): {exc}")
 
     if not await run_historical_analysis(params):
         return
@@ -1266,6 +1503,8 @@ async def run_bot():
                 f"[LIVE-BRIDGE] Session summary | trades={stats['trades']} wins={stats['wins']} "
                 f"losses={stats['losses']} win_rate={stats['win_rate']:.2f}% "
                 f"pf={stats['profit_factor']:.2f} net_pnl={stats['net_pnl']:.2f}")
+            # Persist final state so the next session picks it up.
+            _save_bridge_state()
 
 async def main():
     """Main entry point with graceful shutdown."""
