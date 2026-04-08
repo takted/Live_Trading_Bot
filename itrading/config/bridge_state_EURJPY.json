@@ -2,13 +2,13 @@
   "_next_trade_id": 3,
   "pip_value": 0.01,
   "stats": {
-    "trades": 0,
+    "trades": 2,
     "wins": 0,
-    "losses": 0,
+    "losses": 2,
     "gross_profit": 0.0,
-    "gross_loss": 0.0,
+    "gross_loss": 2729.3499999999676,
     "commission_total": 0.0,
-    "net_pnl": 0.0
+    "net_pnl": -2729.3499999999676
   },
   "order_to_trade": {
     "49": "LIVE-000001",
@@ -18,7 +18,10 @@
     "54": "LIVE-000002",
     "55": "LIVE-000002"
   },
-  "tracked_exec_ids": [],
+  "tracked_exec_ids": [
+    "0000e215.69d5b599.01.01",
+    "0000e215.69d5b592.01.01"
+  ],
   "trades": {
     "LIVE-000001": {
       "trade_id": "LIVE-000001",
@@ -34,14 +37,14 @@
       "entry_time": "2026-04-08T14:30:07.808206+00:00",
       "entry_price": 185.185,
       "filled_size": 5746.0,
-      "exit_time": null,
-      "exit_price": null,
-      "exit_reason": null,
-      "pnl": null,
-      "gross_pnl": null,
+      "exit_time": "2026-04-08T18:18:09.101804+00:00",
+      "exit_price": 184.935,
+      "exit_reason": "STOP_LOSS",
+      "pnl": -1436.5,
+      "gross_pnl": -1436.5,
       "commission": 0.0,
-      "net_pnl": null,
-      "status": "OPEN"
+      "net_pnl": -1436.5,
+      "status": "CLOSED"
     },
     "LIVE-000002": {
       "trade_id": "LIVE-000002",
@@ -57,14 +60,14 @@
       "entry_time": "2026-04-08T14:45:07.518739+00:00",
       "entry_price": 185.16,
       "filled_size": 5746.0,
-      "exit_time": null,
-      "exit_price": null,
-      "exit_reason": null,
-      "pnl": null,
-      "gross_pnl": null,
+      "exit_time": "2026-04-08T18:18:19.443300+00:00",
+      "exit_price": 184.935,
+      "exit_reason": "STOP_LOSS",
+      "pnl": -1292.8499999999674,
+      "gross_pnl": -1292.8499999999674,
       "commission": 0.0,
-      "net_pnl": null,
-      "status": "OPEN"
+      "net_pnl": -1292.8499999999674,
+      "status": "CLOSED"
     }
   }
 }
