@@ -3,8 +3,8 @@
   "snapshot_type": "5-minute instrument snapshot",
   "instrument": "EURJPY",
   "timezone": "America/New_York",
-  "as_of_utc": "2026-04-08T20:25:00+00:00",
-  "last_processed_bar_utc": "2026-04-08T20:25:00+00:00",
+  "as_of_utc": "2026-04-08T20:35:00+00:00",
+  "last_processed_bar_utc": "2026-04-08T20:35:00+00:00",
   "starting_capital_usd": 10000.0,
   "strategy_state": {
     "entry_state": "SCANNING",
@@ -40,8 +40,8 @@
       "net_realized_pnl_usd": -2729.3499999999676,
       "open_trades": 0,
       "start_value_usd": 7270.650000000032,
-      "final_value_usd": -7001.690546052631,
-      "total_pnl_usd": -14272.340546052663
+      "final_value_usd": -7000.8577302631575,
+      "total_pnl_usd": -14271.50773026319
     },
     "orders": [
       {
@@ -59,7 +59,7 @@
         "tif": "GTC",
         "limit_price": 184.382,
         "local_symbol": "EUR.JPY",
-        "updated_at": "2026-04-08T20:25:07.578379+00:00"
+        "updated_at": "2026-04-08T20:35:07.424630+00:00"
       },
       {
         "order_id": 66,
@@ -76,7 +76,7 @@
         "tif": "GTC",
         "stop_price": 185.126,
         "local_symbol": "EUR.JPY",
-        "updated_at": "2026-04-08T20:25:07.578410+00:00"
+        "updated_at": "2026-04-08T20:35:07.424659+00:00"
       }
     ],
     "trades": [
@@ -141,8 +141,8 @@
       "net_realized_pnl_usd": -2729.3499999999676,
       "open_trades": 0,
       "start_value_usd": 10000.0,
-      "final_value_usd": -7001.690546052631,
-      "total_pnl_usd": -17001.690546052632
+      "final_value_usd": -7000.8577302631575,
+      "total_pnl_usd": -17000.857730263157
     }
   },
   "broker": {
@@ -154,21 +154,21 @@
         "qty": -5754.0,
         "avg_cost": 184.83990528556075,
         "market_value_base": -5754.0,
-        "market_value_usd": -7001.690546052631,
+        "market_value_usd": -7000.8577302631575,
         "cost_basis_usd": -6997.16325666524,
-        "unrealized_pnl_usd": -4.527289387391647
+        "unrealized_pnl_usd": -3.6944735979177494
       }
     ],
     "totals": {
-      "market_value_usd_total": -7001.690546052631,
+      "market_value_usd_total": -7000.8577302631575,
       "cost_basis_usd_total": -6997.16325666524,
-      "unrealized_pnl_usd_total": -4.527289387391647
+      "unrealized_pnl_usd_total": -3.6944735979177494
     },
     "instrument_net_liq": {
       "pair": "EURJPY",
       "base_currency": "EUR",
       "nlv_base": -5754.0,
-      "nlv_usd": -7001.690546052631
+      "nlv_usd": -7000.8577302631575
     },
     "open_orders": [
       {
@@ -232,7 +232,7 @@
         "tif": "GTC",
         "limit_price": 184.382,
         "local_symbol": "EUR.JPY",
-        "updated_at": "2026-04-08T20:25:07.578379+00:00"
+        "updated_at": "2026-04-08T20:35:07.424630+00:00"
       },
       "66": {
         "order_id": 66,
@@ -249,7 +249,7 @@
         "tif": "GTC",
         "stop_price": 185.126,
         "local_symbol": "EUR.JPY",
-        "updated_at": "2026-04-08T20:25:07.578410+00:00"
+        "updated_at": "2026-04-08T20:35:07.424659+00:00"
       }
     },
     "tracked_exec_ids": [

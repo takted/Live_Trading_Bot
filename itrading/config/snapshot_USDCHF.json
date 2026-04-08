@@ -3,8 +3,8 @@
   "snapshot_type": "5-minute instrument snapshot",
   "instrument": "USDCHF",
   "timezone": "America/New_York",
-  "as_of_utc": "2026-04-08T20:25:00+00:00",
-  "last_processed_bar_utc": "2026-04-08T20:25:00+00:00",
+  "as_of_utc": "2026-04-08T20:35:00+00:00",
+  "last_processed_bar_utc": "2026-04-08T20:35:00+00:00",
   "starting_capital_usd": 10000.0,
   "strategy_state": {
     "entry_state": "SCANNING",
@@ -40,8 +40,8 @@
       "net_realized_pnl_usd": 0.0,
       "open_trades": 0,
       "start_value_usd": 10000.0,
-      "final_value_usd": 9999.999999999998,
-      "total_pnl_usd": -1.8189894035458565e-12
+      "final_value_usd": 10000.0,
+      "total_pnl_usd": 0.0
     },
     "orders": [
       {
@@ -59,7 +59,7 @@
         "tif": "GTC",
         "limit_price": 0.79572,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:25:08.179005+00:00"
+        "updated_at": "2026-04-08T20:35:08.081930+00:00"
       },
       {
         "order_id": 34,
@@ -76,7 +76,7 @@
         "tif": "GTC",
         "stop_price": 0.78814,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:25:08.179044+00:00"
+        "updated_at": "2026-04-08T20:35:08.081963+00:00"
       },
       {
         "order_id": 37,
@@ -93,7 +93,7 @@
         "tif": "GTC",
         "limit_price": 0.79526,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:25:08.179059+00:00"
+        "updated_at": "2026-04-08T20:35:08.081977+00:00"
       },
       {
         "order_id": 38,
@@ -110,7 +110,7 @@
         "tif": "GTC",
         "stop_price": 0.78797,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:25:08.179075+00:00"
+        "updated_at": "2026-04-08T20:35:08.081989+00:00"
       }
     ],
     "trades": []
@@ -130,8 +130,8 @@
       "net_realized_pnl_usd": 0.0,
       "open_trades": 0,
       "start_value_usd": 10000.0,
-      "final_value_usd": 9999.999999999998,
-      "total_pnl_usd": -1.8189894035458565e-12
+      "final_value_usd": 10000.0,
+      "total_pnl_usd": 0.0
     }
   },
   "broker": {
@@ -143,21 +143,21 @@
         "qty": 10000.0,
         "avg_cost": 0.789940875587976,
         "market_value_base": 10000.0,
-        "market_value_usd": 9999.999999999998,
-        "cost_basis_usd": 9981.31049996179,
-        "unrealized_pnl_usd": 18.68950003820828
+        "market_value_usd": 10000.0,
+        "cost_basis_usd": 9982.698001895289,
+        "unrealized_pnl_usd": 17.301998104710947
       }
     ],
     "totals": {
-      "market_value_usd_total": 9999.999999999998,
-      "cost_basis_usd_total": 9981.31049996179,
-      "unrealized_pnl_usd_total": 18.68950003820828
+      "market_value_usd_total": 10000.0,
+      "cost_basis_usd_total": 9982.698001895289,
+      "unrealized_pnl_usd_total": 17.301998104710947
     },
     "instrument_net_liq": {
       "pair": "USDCHF",
       "base_currency": "USD",
       "nlv_base": 10000.0,
-      "nlv_usd": 9999.999999999998
+      "nlv_usd": 10000.0
     },
     "open_orders": [
       {
@@ -251,7 +251,7 @@
         "tif": "GTC",
         "limit_price": 0.79572,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:25:08.179005+00:00"
+        "updated_at": "2026-04-08T20:35:08.081930+00:00"
       },
       "34": {
         "order_id": 34,
@@ -268,7 +268,7 @@
         "tif": "GTC",
         "stop_price": 0.78814,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:25:08.179044+00:00"
+        "updated_at": "2026-04-08T20:35:08.081963+00:00"
       },
       "37": {
         "order_id": 37,
@@ -285,7 +285,7 @@
         "tif": "GTC",
         "limit_price": 0.79526,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:25:08.179059+00:00"
+        "updated_at": "2026-04-08T20:35:08.081977+00:00"
       },
       "38": {
         "order_id": 38,
@@ -302,7 +302,7 @@
         "tif": "GTC",
         "stop_price": 0.78797,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:25:08.179075+00:00"
+        "updated_at": "2026-04-08T20:35:08.081989+00:00"
       }
     },
     "tracked_exec_ids": [],

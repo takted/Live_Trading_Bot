@@ -3,8 +3,8 @@
   "snapshot_type": "5-minute instrument snapshot",
   "instrument": "EURUSD",
   "timezone": "America/New_York",
-  "as_of_utc": "2026-04-08T20:25:00+00:00",
-  "last_processed_bar_utc": "2026-04-08T20:25:00+00:00",
+  "as_of_utc": "2026-04-08T20:35:00+00:00",
+  "last_processed_bar_utc": "2026-04-08T20:35:00+00:00",
   "starting_capital_usd": 10000.0,
   "strategy_state": {
     "entry_state": "SCANNING",
