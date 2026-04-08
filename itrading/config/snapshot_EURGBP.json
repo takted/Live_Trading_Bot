@@ -3,8 +3,8 @@
   "snapshot_type": "5-minute instrument snapshot",
   "instrument": "EURGBP",
   "timezone": "America/New_York",
-  "as_of_utc": "2026-04-08T20:35:00+00:00",
-  "last_processed_bar_utc": "2026-04-08T20:35:00+00:00",
+  "as_of_utc": "2026-04-08T20:50:00+00:00",
+  "last_processed_bar_utc": "2026-04-08T20:50:00+00:00",
   "starting_capital_usd": 10000.0,
   "strategy_state": {
     "entry_state": "SCANNING",
@@ -25,7 +25,7 @@
   },
   "day": {
     "session_start_utc": "2026-04-07T21:00:00+00:00",
-    "start_net_liq_usd": 8005.3663108,
+    "start_net_liq_usd": 8006.562130100001,
     "start_net_liq_base": 7243.0,
     "metrics": {
       "trades_closed": 0,
@@ -39,14 +39,14 @@
       "commissions_usd": 0.0,
       "net_realized_pnl_usd": 0.0,
       "open_trades": 0,
-      "start_value_usd": 8005.3663108,
-      "final_value_usd": 8006.470143999999,
-      "total_pnl_usd": 1.1038331999989168
+      "start_value_usd": 8006.562130100001,
+      "final_value_usd": 8006.3321648500005,
+      "total_pnl_usd": -0.22996525000053225
     },
     "orders": [
       {
         "order_id": 19,
-        "created_at": "2026-04-08T20:09:01.180879+00:00",
+        "created_at": "2026-04-08T20:46:00.438920+00:00",
         "symbol": "EURGBP",
         "perm_id": 994463963,
         "parent_id": 18,
@@ -59,11 +59,11 @@
         "tif": "GTC",
         "limit_price": 0.87169,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:35:08.282693+00:00"
+        "updated_at": "2026-04-08T20:50:07.893079+00:00"
       },
       {
         "order_id": 20,
-        "created_at": "2026-04-08T20:09:01.180923+00:00",
+        "created_at": "2026-04-08T20:46:00.439293+00:00",
         "symbol": "EURGBP",
         "perm_id": 994463964,
         "parent_id": 18,
@@ -76,11 +76,11 @@
         "tif": "GTC",
         "stop_price": 0.86824,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:35:08.282724+00:00"
+        "updated_at": "2026-04-08T20:50:07.893118+00:00"
       },
       {
         "order_id": 23,
-        "created_at": "2026-04-08T20:09:01.180948+00:00",
+        "created_at": "2026-04-08T20:46:00.439327+00:00",
         "symbol": "EURGBP",
         "perm_id": 994463967,
         "parent_id": 22,
@@ -93,11 +93,11 @@
         "tif": "GTC",
         "limit_price": 0.87171,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:35:08.282739+00:00"
+        "updated_at": "2026-04-08T20:50:07.893143+00:00"
       },
       {
         "order_id": 24,
-        "created_at": "2026-04-08T20:09:01.180965+00:00",
+        "created_at": "2026-04-08T20:46:00.439350+00:00",
         "symbol": "EURGBP",
         "perm_id": 994463968,
         "parent_id": 22,
@@ -110,7 +110,7 @@
         "tif": "GTC",
         "stop_price": 0.86822,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:35:08.282751+00:00"
+        "updated_at": "2026-04-08T20:50:07.893162+00:00"
       }
     ],
     "trades": []
@@ -130,8 +130,8 @@
       "net_realized_pnl_usd": 0.0,
       "open_trades": 0,
       "start_value_usd": 10000.0,
-      "final_value_usd": 8006.470143999999,
-      "total_pnl_usd": -1993.529856000001
+      "final_value_usd": 8006.3321648500005,
+      "total_pnl_usd": -1993.6678351499995
     }
   },
   "broker": {
@@ -143,21 +143,21 @@
         "qty": 7243.0,
         "avg_cost": 0.8700861343925217,
         "market_value_base": 7243.0,
-        "market_value_usd": 8006.470143999999,
+        "market_value_usd": 8006.3321648500005,
         "cost_basis_usd": 8003.583016684394,
-        "unrealized_pnl_usd": 2.88712731560463
+        "unrealized_pnl_usd": 2.7491481656061296
       }
     ],
     "totals": {
-      "market_value_usd_total": 8006.470143999999,
+      "market_value_usd_total": 8006.3321648500005,
       "cost_basis_usd_total": 8003.583016684394,
-      "unrealized_pnl_usd_total": 2.88712731560463
+      "unrealized_pnl_usd_total": 2.7491481656061296
     },
     "instrument_net_liq": {
       "pair": "EURGBP",
       "base_currency": "EUR",
       "nlv_base": 7243.0,
-      "nlv_usd": 8006.470143999999
+      "nlv_usd": 8006.3321648500005
     },
     "open_orders": [
       {
@@ -238,7 +238,7 @@
     "order_book": {
       "19": {
         "order_id": 19,
-        "created_at": "2026-04-08T20:09:01.180879+00:00",
+        "created_at": "2026-04-08T20:46:00.438920+00:00",
         "symbol": "EURGBP",
         "perm_id": 994463963,
         "parent_id": 18,
@@ -251,11 +251,11 @@
         "tif": "GTC",
         "limit_price": 0.87169,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:35:08.282693+00:00"
+        "updated_at": "2026-04-08T20:50:07.893079+00:00"
       },
       "20": {
         "order_id": 20,
-        "created_at": "2026-04-08T20:09:01.180923+00:00",
+        "created_at": "2026-04-08T20:46:00.439293+00:00",
         "symbol": "EURGBP",
         "perm_id": 994463964,
         "parent_id": 18,
@@ -268,11 +268,11 @@
         "tif": "GTC",
         "stop_price": 0.86824,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:35:08.282724+00:00"
+        "updated_at": "2026-04-08T20:50:07.893118+00:00"
       },
       "23": {
         "order_id": 23,
-        "created_at": "2026-04-08T20:09:01.180948+00:00",
+        "created_at": "2026-04-08T20:46:00.439327+00:00",
         "symbol": "EURGBP",
         "perm_id": 994463967,
         "parent_id": 22,
@@ -285,11 +285,11 @@
         "tif": "GTC",
         "limit_price": 0.87171,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:35:08.282739+00:00"
+        "updated_at": "2026-04-08T20:50:07.893143+00:00"
       },
       "24": {
         "order_id": 24,
-        "created_at": "2026-04-08T20:09:01.180965+00:00",
+        "created_at": "2026-04-08T20:46:00.439350+00:00",
         "symbol": "EURGBP",
         "perm_id": 994463968,
         "parent_id": 22,
@@ -302,7 +302,7 @@
         "tif": "GTC",
         "stop_price": 0.86822,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:35:08.282751+00:00"
+        "updated_at": "2026-04-08T20:50:07.893162+00:00"
       }
     },
     "tracked_exec_ids": [],

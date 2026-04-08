@@ -3,8 +3,8 @@
   "snapshot_type": "5-minute instrument snapshot",
   "instrument": "USDCHF",
   "timezone": "America/New_York",
-  "as_of_utc": "2026-04-08T20:35:00+00:00",
-  "last_processed_bar_utc": "2026-04-08T20:35:00+00:00",
+  "as_of_utc": "2026-04-08T20:55:00+00:00",
+  "last_processed_bar_utc": "2026-04-08T20:55:00+00:00",
   "starting_capital_usd": 10000.0,
   "strategy_state": {
     "entry_state": "SCANNING",
@@ -46,7 +46,7 @@
     "orders": [
       {
         "order_id": 33,
-        "created_at": "2026-04-08T20:00:07.065188+00:00",
+        "created_at": "2026-04-08T20:45:59.117932+00:00",
         "symbol": "USDCHF",
         "perm_id": 994463954,
         "parent_id": 32,
@@ -59,11 +59,11 @@
         "tif": "GTC",
         "limit_price": 0.79572,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:35:08.081930+00:00"
+        "updated_at": "2026-04-08T20:55:07.929005+00:00"
       },
       {
         "order_id": 34,
-        "created_at": "2026-04-08T20:00:07.065237+00:00",
+        "created_at": "2026-04-08T20:45:59.117977+00:00",
         "symbol": "USDCHF",
         "perm_id": 994463955,
         "parent_id": 32,
@@ -76,11 +76,11 @@
         "tif": "GTC",
         "stop_price": 0.78814,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:35:08.081963+00:00"
+        "updated_at": "2026-04-08T20:55:07.929035+00:00"
       },
       {
         "order_id": 37,
-        "created_at": "2026-04-08T20:00:07.065266+00:00",
+        "created_at": "2026-04-08T20:45:59.118010+00:00",
         "symbol": "USDCHF",
         "perm_id": 994463957,
         "parent_id": 36,
@@ -93,11 +93,11 @@
         "tif": "GTC",
         "limit_price": 0.79526,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:35:08.081977+00:00"
+        "updated_at": "2026-04-08T20:55:07.929048+00:00"
       },
       {
         "order_id": 38,
-        "created_at": "2026-04-08T20:00:07.065288+00:00",
+        "created_at": "2026-04-08T20:45:59.118035+00:00",
         "symbol": "USDCHF",
         "perm_id": 994463958,
         "parent_id": 36,
@@ -110,7 +110,7 @@
         "tif": "GTC",
         "stop_price": 0.78797,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:35:08.081989+00:00"
+        "updated_at": "2026-04-08T20:55:07.929059+00:00"
       }
     ],
     "trades": []
@@ -144,14 +144,14 @@
         "avg_cost": 0.789940875587976,
         "market_value_base": 10000.0,
         "market_value_usd": 10000.0,
-        "cost_basis_usd": 9982.698001895289,
-        "unrealized_pnl_usd": 17.301998104710947
+        "cost_basis_usd": 9981.815001490764,
+        "unrealized_pnl_usd": 18.18499850923581
       }
     ],
     "totals": {
       "market_value_usd_total": 10000.0,
-      "cost_basis_usd_total": 9982.698001895289,
-      "unrealized_pnl_usd_total": 17.301998104710947
+      "cost_basis_usd_total": 9981.815001490764,
+      "unrealized_pnl_usd_total": 18.18499850923581
     },
     "instrument_net_liq": {
       "pair": "USDCHF",
@@ -238,7 +238,7 @@
     "order_book": {
       "33": {
         "order_id": 33,
-        "created_at": "2026-04-08T20:00:07.065188+00:00",
+        "created_at": "2026-04-08T20:45:59.117932+00:00",
         "symbol": "USDCHF",
         "perm_id": 994463954,
         "parent_id": 32,
@@ -251,11 +251,11 @@
         "tif": "GTC",
         "limit_price": 0.79572,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:35:08.081930+00:00"
+        "updated_at": "2026-04-08T20:55:07.929005+00:00"
       },
       "34": {
         "order_id": 34,
-        "created_at": "2026-04-08T20:00:07.065237+00:00",
+        "created_at": "2026-04-08T20:45:59.117977+00:00",
         "symbol": "USDCHF",
         "perm_id": 994463955,
         "parent_id": 32,
@@ -268,11 +268,11 @@
         "tif": "GTC",
         "stop_price": 0.78814,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:35:08.081963+00:00"
+        "updated_at": "2026-04-08T20:55:07.929035+00:00"
       },
       "37": {
         "order_id": 37,
-        "created_at": "2026-04-08T20:00:07.065266+00:00",
+        "created_at": "2026-04-08T20:45:59.118010+00:00",
         "symbol": "USDCHF",
         "perm_id": 994463957,
         "parent_id": 36,
@@ -285,11 +285,11 @@
         "tif": "GTC",
         "limit_price": 0.79526,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:35:08.081977+00:00"
+        "updated_at": "2026-04-08T20:55:07.929048+00:00"
       },
       "38": {
         "order_id": 38,
-        "created_at": "2026-04-08T20:00:07.065288+00:00",
+        "created_at": "2026-04-08T20:45:59.118035+00:00",
         "symbol": "USDCHF",
         "perm_id": 994463958,
         "parent_id": 36,
@@ -302,7 +302,7 @@
         "tif": "GTC",
         "stop_price": 0.78797,
         "local_symbol": "USD.CHF",
-        "updated_at": "2026-04-08T20:35:08.081989+00:00"
+        "updated_at": "2026-04-08T20:55:07.929059+00:00"
       }
     },
     "tracked_exec_ids": [],

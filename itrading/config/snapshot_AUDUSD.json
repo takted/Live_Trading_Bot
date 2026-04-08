@@ -3,98 +3,23 @@
   "snapshot_type": "5-minute instrument snapshot",
   "instrument": "AUDUSD",
   "timezone": "America/New_York",
-  "as_of_utc": "2026-04-08T20:35:00+00:00",
-  "last_processed_bar_utc": "2026-04-08T20:35:00+00:00",
+  "as_of_utc": "2026-04-08T20:55:00+00:00",
+  "last_processed_bar_utc": "2026-04-08T20:55:00+00:00",
   "starting_capital_usd": 10000.0,
   "strategy_state": {
-    "entry_state": "SCANNING",
-    "armed_direction": null,
-    "pullback_candle_count": 0,
-    "last_pullback_candle_high": null,
-    "last_pullback_candle_low": null,
-    "window_bar_start": null,
-    "window_top_limit": null,
-    "window_bottom_limit": null,
-    "window_expiry_bar": null,
+    "entry_state": "WINDOW_OPEN",
+    "armed_direction": "LONG",
+    "pullback_candle_count": 1,
+    "last_pullback_candle_high": 0.7045,
+    "last_pullback_candle_low": 0.704445,
+    "window_bar_start": 300,
+    "window_top_limit": 0.704500055,
+    "window_bottom_limit": 0.704444945,
+    "window_expiry_bar": 302,
     "window_breakout_level": null,
-    "signal_trigger_candle": null,
-    "signal_detection_atr": 0.00034506270276077366,
-    "signal_detection_bar": null,
-    "entry_window_start": null,
-    "breakout_target": null
-  },
-  "day": {
-    "session_start_utc": "2026-04-07T21:00:00+00:00",
-    "start_net_liq_usd": 10000.0,
-    "start_net_liq_base": null,
-    "metrics": {
-      "trades_closed": 0,
-      "entries_filled": 0,
-      "wins": 0,
-      "losses": 0,
-      "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "gross_profit_usd": 0.0,
-      "gross_loss_usd": 0.0,
-      "commissions_usd": 0.0,
-      "net_realized_pnl_usd": 0.0,
-      "open_trades": 0,
-      "start_value_usd": 10000.0,
-      "final_value_usd": 10000.0,
-      "total_pnl_usd": 0.0
-    },
-    "orders": [],
-    "trades": []
-  },
-  "ltd": {
-    "starting_capital_usd": 10000.0,
-    "metrics": {
-      "trades_closed": 0,
-      "entries_filled": 0,
-      "wins": 0,
-      "losses": 0,
-      "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "gross_profit_usd": 0.0,
-      "gross_loss_usd": 0.0,
-      "commissions_usd": 0.0,
-      "net_realized_pnl_usd": 0.0,
-      "open_trades": 0,
-      "start_value_usd": 10000.0,
-      "final_value_usd": 10000.0,
-      "total_pnl_usd": 0.0
-    }
-  },
-  "broker": {
-    "positions": [],
-    "totals": {
-      "market_value_usd_total": 0.0,
-      "cost_basis_usd_total": 0.0,
-      "unrealized_pnl_usd_total": 0.0
-    },
-    "instrument_net_liq": {
-      "pair": "AUDUSD",
-      "base_currency": "AUD",
-      "nlv_base": null,
-      "nlv_usd": 10000.0
-    },
-    "open_orders": []
-  },
-  "bridge_runtime": {
-    "_next_trade_id": 1,
-    "pip_value": 0.0001,
-    "stats": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "gross_profit": 0.0,
-      "gross_loss": 0.0,
-      "commission_total": 0.0,
-      "net_pnl": 0.0
-    },
-    "order_to_trade": {},
-    "order_book": {},
-    "tracked_exec_ids": [],
-    "trades": {}
-  }
-}
+    "signal_trigger_candle": {
+      "open": 0.70459,
+      "close": 0.70459,
+      "high": 0.704635,
+      "low": 0.70459,
+      "datetime": 
