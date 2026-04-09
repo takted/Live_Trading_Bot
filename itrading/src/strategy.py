@@ -4153,6 +4153,7 @@ class ITradingStrategy(bt.Strategy):
         broker_block = dict(live_snapshot.get('broker') or {})
         session_start = str(day_block.get('session_start_utc', 'n/a'))
         day_orders = list(day_block.get('orders') or [])
+        # Parent orders remain in snapshot JSON, but report output is consolidated in DAY Orders.
         day_trades = list(day_block.get('trades') or [])
         open_orders = list(broker_block.get('open_orders') or [])
 
@@ -4160,7 +4161,7 @@ class ITradingStrategy(bt.Strategy):
 
         print(f"DAY Orders (session total): {len(day_orders)}")
         if day_orders:
-            print("  id   trade_id     parent side type qty     filled  rem     tif  price      status")
+            print("  id   perm_id      parent side type qty     filled  rem     tif  price      status")
             for order in day_orders:
                 order_type = str(order.get('order_type', '') or '').upper()
                 price = '-'
@@ -4170,13 +4171,15 @@ class ITradingStrategy(bt.Strategy):
                     price = f"{float(order.get('stop_price', 0.0)):.5f}"
 
                 print(
-                    f"  {int(order.get('order_id', 0)):<4} {str(order.get('trade_id', '') or '-'): <12} {int(order.get('parent_id', 0)):<6} "
+                    f"  {int(order.get('order_id', 0)):<4} {int(order.get('perm_id', 0) or 0):<12} {int(order.get('parent_id', 0)):<6} "
                     f"{str(order.get('action', '') or '').upper():<4} {order_type:<4} "
                     f"{float(order.get('quantity', 0.0) or 0.0):<7.0f} {float(order.get('filled', 0.0) or 0.0):<7.0f} "
                     f"{float(order.get('remaining', 0.0) or 0.0):<7.0f} {(str(order.get('tif', '') or '').upper() or 'N/A'):<4} "
                     f"{price:<10} {str(order.get('status', '') or '').upper()}")
         else:
             print("  none")
+
+        # Parent Orders section intentionally omitted; all orders are listed in DAY Orders.
 
         print(f"DAY Trades (session total): {len(day_trades)}")
         if day_trades:
@@ -4199,30 +4202,7 @@ class ITradingStrategy(bt.Strategy):
         else:
             print("  none")
 
-        open_gtc_orders = [
-            order for order in open_orders
-            if str(order.get('tif', '') or '').upper() == 'GTC'
-            and float(order.get('remaining', 0.0) or 0.0) > 0
-        ]
-        print(f"Open GTC Orders (live): {len(open_gtc_orders)}")
-        if open_gtc_orders:
-            print("  id   parent side type qty     rem     price      status")
-            for order in open_gtc_orders:
-                order_type = str(order.get('order_type', '') or '').upper()
-                price = '-'
-                lmt = order.get('lmt_price', order.get('limit_price'))
-                stp = order.get('aux_price', order.get('stop_price'))
-                if order_type == 'LMT' and lmt not in (None, 0, 0.0):
-                    price = f"{float(lmt):.5f}"
-                elif order_type == 'STP' and stp not in (None, 0, 0.0):
-                    price = f"{float(stp):.5f}"
-                print(
-                    f"  {int(order.get('order_id', 0)):<4} {int(order.get('parent_id', 0)):<6} "
-                    f"{str(order.get('action', '') or '').upper():<4} {order_type:<4} "
-                    f"{float(order.get('quantity', 0.0) or 0.0):<7.0f} {float(order.get('remaining', 0.0) or 0.0):<7.0f} "
-                    f"{price:<10} {str(order.get('status', '') or '').upper()}")
-        else:
-            print("  none")
+        # Open GTC Orders section intentionally omitted; DAY Orders is the single order section.
 
     def _print_day_ltd_rows(self, rows, indent='  '):
         """Print DAY/LTD metrics in a readable two-column table."""
@@ -4317,25 +4297,6 @@ class ITradingStrategy(bt.Strategy):
                     ("Unrealized PnL (USD)", f"{snapshot['unrealized_pnl_usd_total']:+,.2f}"),
                 ], indent="      ")
 
-            instrument_nlv = self._compute_instrument_net_liq(snapshot)
-            if instrument_nlv['nlv_base'] is not None and instrument_nlv['nlv_usd'] is not None:
-                self._print_aligned_rows([
-                    (
-                        f"Instrument NetLiq ({instrument_nlv['pair']})",
-                        f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']} | {instrument_nlv['nlv_usd']:+,.2f} USD",
-                    )
-                ])
-            elif instrument_nlv['nlv_usd'] is not None:
-                self._print_aligned_rows([
-                    (f"Instrument NetLiq ({instrument_nlv['pair']})", f"{instrument_nlv['nlv_usd']:+,.2f} USD")
-                ])
-            elif instrument_nlv['nlv_base'] is not None:
-                self._print_aligned_rows([
-                    (
-                        f"Instrument NetLiq ({instrument_nlv['pair']})",
-                        f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']}",
-                    )
-                ])
             print("=" * 60)
 
         except AttributeError as e:
@@ -4510,16 +4471,6 @@ class ITradingStrategy(bt.Strategy):
         if self.p.live_trading and isinstance(live_snapshot, dict):
             self._print_daily_snapshot_activity(live_snapshot)
 
-        instrument_nlv_label = "N/A"
-        if instrument_nlv['nlv_base'] is not None and instrument_nlv['nlv_usd'] is not None:
-            instrument_nlv_label = f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']} | {instrument_nlv['nlv_usd']:+,.2f} USD"
-        elif instrument_nlv['nlv_usd'] is not None:
-            instrument_nlv_label = f"{instrument_nlv['nlv_usd']:+,.2f} USD"
-        elif instrument_nlv['nlv_base'] is not None:
-            instrument_nlv_label = f"{instrument_nlv['nlv_base']:+,.2f} {instrument_nlv['base_currency']}"
-        self._print_aligned_rows([
-            (f"Instrument NetLiq ({instrument_nlv['pair']})", instrument_nlv_label)
-        ])
 
         # Include broker position details if connection is available
         self._print_broker_positions(snapshot=broker_snapshot)

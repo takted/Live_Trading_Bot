@@ -24,6 +24,7 @@ mt5_*.log
 *.report
 account_*.json
 trading_report_*.txt
+snapshot_*.json
 temp_reports/
 reports/
 

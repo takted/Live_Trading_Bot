@@ -558,6 +558,40 @@ def _save_snapshot_document(
         _log_snapshot_sections(snapshot_document)
 
 
+def _build_runtime_snapshot_document(
+    instrument: str,
+    params: Optional[dict] = None,
+    last_processed_bar_dt: Optional[datetime] = None,
+    broker_snapshot: Optional[dict] = None,
+    instrument_nlv: Optional[dict] = None,
+    open_orders: Optional[list[dict]] = None,
+) -> dict:
+    """Build the current in-memory snapshot document without writing it to disk."""
+    if live_lifecycle_bridge is None:
+        return {}
+
+    runtime_params = params or last_loaded_params or {}
+    existing_snapshot = _load_snapshot_document(instrument)
+    starting_cash = _safe_float(runtime_params.get('STARTING_CASH', 10000.0), 10000.0)
+    broker_snapshot = broker_snapshot or last_strategy_broker_snapshot or {}
+    instrument_nlv = instrument_nlv or last_strategy_instrument_nlv or {}
+    open_orders = list(open_orders or _get_open_orders_for_instrument(instrument))
+
+    live_lifecycle_bridge.sync_open_orders_snapshot(instrument, open_orders)
+
+    return live_lifecycle_bridge.build_snapshot_document(
+        instrument=instrument,
+        starting_capital_usd=starting_cash,
+        broker_snapshot=broker_snapshot,
+        instrument_nlv=instrument_nlv,
+        open_orders=open_orders,
+        live_state_snapshot=live_strategy_state,
+        last_processed_bar_dt=last_processed_bar_dt or last_live_processed_dt,
+        existing_snapshot=existing_snapshot,
+        as_of_dt=last_processed_bar_dt or datetime.now(timezone.utc),
+    )
+
+
 def _log_snapshot_sections(snapshot_document: dict):
     """Print readable DAY snapshot sections for operations monitoring."""
     if not isinstance(snapshot_document, dict):
@@ -673,6 +707,12 @@ def _on_ib_order_status_event(*args):
         remaining=_safe_float(getattr(status_obj, 'remaining', 0.0), 0.0),
         avg_fill_price=_safe_float(getattr(status_obj, 'avgFillPrice', 0.0), 0.0),
         last_fill_price=_safe_float(getattr(status_obj, 'lastFillPrice', 0.0), 0.0),
+        perm_id=_safe_int(getattr(order, 'permId', None), 0),
+        parent_id=_safe_int(getattr(order, 'parentId', None), 0),
+        action=str(getattr(order, 'action', '') or '').upper(),
+        order_type=str(getattr(order, 'orderType', '') or '').upper(),
+        tif=str(getattr(order, 'tif', '') or '').upper(),
+        quantity=_safe_float(getattr(order, 'totalQuantity', 0.0), 0.0),
     )
     # Persist after every status change so trade closure survives restart.
     _save_snapshot_5_minutes()
@@ -685,6 +725,7 @@ def _on_ib_exec_details_event(*args):
 
     fill_obj = args[-1]
     execution = getattr(fill_obj, 'execution', None)
+    contract = getattr(fill_obj, 'contract', None)
     if execution is None:
         return
 
@@ -698,12 +739,26 @@ def _on_ib_exec_details_event(*args):
             if abs(commission) > 1e9:
                 commission = None
 
+    symbol = None
+    if contract is not None:
+        sym = str(getattr(contract, 'symbol', '') or '').upper()
+        cur = str(getattr(contract, 'currency', '') or '').upper()
+        if sym and cur:
+            symbol = f"{sym}{cur}"
+
+    side = str(getattr(execution, 'side', '') or '').upper()
+    action = 'BUY' if side == 'BOT' else ('SELL' if side == 'SLD' else side)
+
     live_lifecycle_bridge.on_execution(
         order_id=_safe_int(getattr(execution, 'orderId', None), 0),
         price=_safe_float(getattr(execution, 'price', 0.0), 0.0),
         quantity=_safe_float(getattr(execution, 'shares', 0.0), 0.0),
         exec_id=str(getattr(execution, 'execId', '') or '').strip() or None,
         commission=commission,
+        symbol=symbol,
+        action=action,
+        perm_id=_safe_int(getattr(execution, 'permId', None), 0),
+        exec_time=live_lifecycle_bridge._parse_ib_exec_time(str(getattr(execution, 'time', '') or '')),
     )
     # Persist after every execution fill.
     _save_snapshot_5_minutes()
@@ -909,6 +964,25 @@ def _get_open_orders_for_instrument(forex_pair: str) -> list[dict]:
 
     snapshots.sort(key=lambda item: item['order_id'])
     return snapshots
+
+
+async def _get_completed_orders_for_instrument(forex_pair: str) -> list[Any]:
+    """Fetch completed/terminal IB orders for the requested instrument when supported."""
+    if ib is None or not ib.isConnected():
+        return []
+
+    try:
+        completed_trades = await ib.reqCompletedOrdersAsync(apiOnly=False)
+    except Exception as exc:
+        logger.warning(f"Could not query IB completed orders for {forex_pair}: {exc}")
+        return []
+
+    filtered: list[Any] = []
+    for completed in completed_trades or []:
+        contract = getattr(completed, 'contract', None)
+        if _contract_matches_forex_pair(contract, forex_pair):
+            filtered.append(completed)
+    return filtered
 
 
 def _log_open_orders_snapshot(forex_pair: str):
@@ -1320,6 +1394,18 @@ async def run_strategy_on_live_bar(live_bars):
 
     instrument = str(params.get('FOREX_INSTRUMENT', '')).strip().upper()
     cycle_open_orders = _get_open_orders_for_instrument(instrument)
+    cycle_completed_orders = await _get_completed_orders_for_instrument(instrument)
+    if live_lifecycle_bridge is not None and cycle_completed_orders:
+        live_lifecycle_bridge.ingest_completed_orders(cycle_completed_orders, instrument)
+
+    cycle_snapshot_document = _build_runtime_snapshot_document(
+        instrument=instrument,
+        params=params,
+        last_processed_bar_dt=latest_live_dt,
+        broker_snapshot=last_strategy_broker_snapshot,
+        instrument_nlv=last_strategy_instrument_nlv,
+        open_orders=cycle_open_orders,
+    )
 
     # Keep open-order capture for snapshot persistence, but avoid duplicate pre-cycle logs.
 
@@ -1364,7 +1450,7 @@ async def run_strategy_on_live_bar(live_bars):
         signal_queue=signal_queue,
         live_cutoff_dt=last_live_processed_dt,
         live_state_in=live_strategy_state,
-        live_snapshot_in=_load_snapshot_document(instrument),
+        live_snapshot_in=cycle_snapshot_document,
         ib_connection=_strategy_ib_connection(),
         live_bridge_stats_in=(live_lifecycle_bridge.get_stats_snapshot() if live_lifecycle_bridge is not None else None),
         **strategy_params
@@ -1573,15 +1659,28 @@ async def run_bot():
         # Look back up to 7 days so recently closed trades are captured.
         ef.time = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y%m%d-%H:%M:%S')
         fills = await ib.reqExecutionsAsync(ef)
+        completed_trades = await _get_completed_orders_for_instrument(instrument)
+        completed_added = 0
+        if completed_trades:
+            completed_added = live_lifecycle_bridge.ingest_completed_orders(completed_trades, instrument)
         if fills:
+            added_order_rows = live_lifecycle_bridge.ingest_execution_orders(fills, instrument)
             added = live_lifecycle_bridge.reconcile_from_fills(fills, instrument)
             if added:
                 logger.info(f"[LIVE-BRIDGE] Startup reconciliation added {added} closed trade(s) from IB execution history.")
                 _save_snapshot_5_minutes(params=params)
+            elif added_order_rows or completed_added:
+                logger.info(
+                    f"[LIVE-BRIDGE] Startup reconciliation added {added_order_rows} execution-derived order row(s) "
+                    f"and {completed_added} completed-order row(s).")
+                _save_snapshot_5_minutes(params=params)
             else:
                 logger.info("[LIVE-BRIDGE] Startup reconciliation: no new untracked fills found.")
+        elif completed_added:
+            logger.info(f"[LIVE-BRIDGE] Startup reconciliation added {completed_added} completed-order row(s).")
+            _save_snapshot_5_minutes(params=params)
         else:
-            logger.info("[LIVE-BRIDGE] Startup reconciliation: IB returned no execution history.")
+            logger.info("[LIVE-BRIDGE] Startup reconciliation: IB returned no execution or completed-order history.")
     except Exception as exc:
         logger.warning(f"[LIVE-BRIDGE] Startup reconciliation failed (non-fatal): {exc}")
 

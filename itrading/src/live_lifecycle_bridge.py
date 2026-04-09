@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -489,16 +490,40 @@ class LiveLifecycleBridge:
         remaining: float = 0.0,
         avg_fill_price: float = 0.0,
         last_fill_price: float = 0.0,
+        perm_id: Optional[int] = None,
+        parent_id: Optional[int] = None,
+        action: Optional[str] = None,
+        order_type: Optional[str] = None,
+        tif: Optional[str] = None,
+        quantity: Optional[float] = None,
     ) -> None:
         """Process normalized order status updates from IB callbacks."""
         if order_id is None:
             return
 
+        normalized_status = str(status or "").upper()
+
         trade = self._get_trade_by_order_id(order_id)
         if trade is None:
+            self._upsert_order_record(
+                int(order_id),
+                perm_id=(int(perm_id) if perm_id not in (None, '') else None),
+                parent_id=(int(parent_id) if parent_id not in (None, '') else None),
+                action=str(action or '').upper() or None,
+                order_type=str(order_type or '').upper() or None,
+                tif=str(tif or '').upper() or None,
+                quantity=(float(quantity) if quantity not in (None, '') else None),
+                status=normalized_status,
+                filled=float(filled or 0.0),
+                remaining=float(remaining or 0.0),
+                avg_fill_price=float(avg_fill_price or 0.0),
+                last_fill_price=float(last_fill_price or 0.0),
+            )
+            self.logger.info(
+                f"[LIVE-BRIDGE] order_status | trade=<unmapped> order_id={order_id} status={normalized_status} "
+                f"filled={filled} remaining={remaining} avg={avg_fill_price} last={last_fill_price}")
             return
 
-        normalized_status = str(status or "").upper()
 
         self.logger.info(
             f"[LIVE-BRIDGE] order_status | trade={trade.trade_id} order_id={order_id} status={normalized_status} "
@@ -508,6 +533,12 @@ class LiveLifecycleBridge:
             int(order_id),
             trade_id=trade.trade_id,
             symbol=trade.symbol,
+            perm_id=(int(perm_id) if perm_id not in (None, '') else None),
+            parent_id=(int(parent_id) if parent_id not in (None, '') else None),
+            action=str(action or '').upper() or None,
+            order_type=str(order_type or '').upper() or None,
+            tif=str(tif or '').upper() or None,
+            quantity=(float(quantity) if quantity not in (None, '') else None),
             status=normalized_status,
             filled=float(filled or 0.0),
             remaining=float(remaining or 0.0),
@@ -540,6 +571,10 @@ class LiveLifecycleBridge:
         quantity: float,
         exec_id: Optional[str] = None,
         commission: Optional[float] = None,
+        symbol: Optional[str] = None,
+        action: Optional[str] = None,
+        perm_id: Optional[int] = None,
+        exec_time: Optional[datetime] = None,
     ) -> None:
         """Process execution details; used as a fallback when status events are delayed."""
         if order_id is None:
@@ -550,6 +585,23 @@ class LiveLifecycleBridge:
             if normalized_exec_id in self._tracked_exec_ids:
                 return
             self._tracked_exec_ids.add(normalized_exec_id)
+
+        # Always persist execution-backed order facts so parent/filled orders appear in DAY snapshots.
+        self._upsert_order_record(
+            int(order_id),
+            symbol=(str(symbol or '').strip().upper() or None),
+            perm_id=(int(perm_id) if perm_id not in (None, '') else None),
+            action=(str(action or '').upper() or None),
+            order_type='MKT',
+            status='FILLED',
+            quantity=float(quantity or 0.0),
+            filled=float(quantity or 0.0),
+            remaining=0.0,
+            avg_fill_price=float(price or 0.0),
+            last_fill_price=float(price or 0.0),
+            tif='DAY',
+            terminal_at=self._dt_string(exec_time or datetime.now(timezone.utc)),
+        )
 
         trade = self._get_trade_by_order_id(order_id)
         if trade is None:
@@ -576,6 +628,119 @@ class LiveLifecycleBridge:
 
         if order_id == trade.stop_loss_order_id and trade.status != "CLOSED":
             self._mark_exit_filled(trade, price, quantity, "STOP_LOSS")
+
+    def ingest_execution_orders(self, fills: List[Any], symbol: str) -> int:
+        """Backfill order_book with execution-derived FILLED orders for today's visibility."""
+        pair = str(symbol or '').strip().upper()
+        if len(pair) < 6:
+            return 0
+        base = pair[:3]
+        quote = pair[3:6]
+
+        added = 0
+        for fill in fills or []:
+            try:
+                contract = getattr(fill, 'contract', None)
+                execution = getattr(fill, 'execution', None)
+                if contract is None or execution is None:
+                    continue
+
+                sym = str(getattr(contract, 'symbol', '') or '').upper()
+                cur = str(getattr(contract, 'currency', '') or '').upper()
+                if sym != base or cur != quote:
+                    continue
+
+                order_id = int(getattr(execution, 'orderId', 0) or 0)
+                if order_id <= 0:
+                    continue
+
+                side = str(getattr(execution, 'side', '') or '').upper()
+                action = 'BUY' if side == 'BOT' else ('SELL' if side == 'SLD' else side)
+                price = float(getattr(execution, 'price', 0.0) or 0.0)
+                quantity = abs(float(getattr(execution, 'shares', 0.0) or 0.0))
+                perm_id = int(getattr(execution, 'permId', 0) or 0)
+                exec_time = self._parse_ib_exec_time(str(getattr(execution, 'time', '') or ''))
+
+                already_exists = order_id in self.order_book
+                self._upsert_order_record(
+                    order_id,
+                    symbol=pair,
+                    perm_id=(perm_id if perm_id > 0 else None),
+                    action=(action or None),
+                    order_type='MKT',
+                    status='FILLED',
+                    quantity=quantity,
+                    filled=quantity,
+                    remaining=0.0,
+                    avg_fill_price=price,
+                    last_fill_price=price,
+                    tif='DAY',
+                    terminal_at=self._dt_string(exec_time or datetime.now(timezone.utc)),
+                )
+                if not already_exists:
+                    added += 1
+            except Exception:
+                continue
+
+        return added
+
+    def ingest_completed_orders(self, completed_trades: List[Any], symbol: str) -> int:
+        """Backfill terminal orders (including CANCELLED) from IB completed orders API."""
+        pair = str(symbol or '').strip().upper()
+        if len(pair) < 6:
+            return 0
+        base = pair[:3]
+        quote = pair[3:6]
+
+        added = 0
+        for completed in completed_trades or []:
+            try:
+                contract = getattr(completed, 'contract', None)
+                order = getattr(completed, 'order', None)
+                order_status = getattr(completed, 'orderStatus', None)
+                if contract is None or order is None or order_status is None:
+                    continue
+
+                sym = str(getattr(contract, 'symbol', '') or '').upper()
+                cur = str(getattr(contract, 'currency', '') or '').upper()
+                if sym != base or cur != quote:
+                    continue
+
+                order_id = int(getattr(order, 'orderId', 0) or 0)
+                if order_id <= 0:
+                    continue
+
+                status = str(getattr(order_status, 'status', '') or '').upper().replace('_', '')
+                if not status:
+                    continue
+
+                # Normalize to the style used elsewhere in the bridge.
+                if status == 'APICANCELLED':
+                    status = 'API_CANCELLED'
+
+                already_exists = order_id in self.order_book
+                self._upsert_order_record(
+                    order_id,
+                    trade_id=self.order_to_trade.get(order_id),
+                    symbol=pair,
+                    perm_id=(int(getattr(order, 'permId', 0) or 0) or None),
+                    parent_id=int(getattr(order, 'parentId', 0) or 0),
+                    action=str(getattr(order, 'action', '') or '').upper() or None,
+                    order_type=str(getattr(order, 'orderType', '') or '').upper() or None,
+                    quantity=float(getattr(order, 'totalQuantity', 0.0) or 0.0),
+                    filled=float(getattr(order_status, 'filled', 0.0) or 0.0),
+                    remaining=float(getattr(order_status, 'remaining', 0.0) or 0.0),
+                    avg_fill_price=float(getattr(order_status, 'avgFillPrice', 0.0) or 0.0),
+                    last_fill_price=float(getattr(order_status, 'lastFillPrice', 0.0) or 0.0),
+                    tif=str(getattr(order, 'tif', '') or '').upper() or None,
+                    status=status,
+                )
+                if not already_exists:
+                    added += 1
+            except Exception:
+                continue
+
+        return added
 
     def get_stats_snapshot(self) -> Dict[str, float]:
         """Return aggregate live trade statistics compatible with backtest summary fields."""
@@ -608,6 +773,7 @@ class LiveLifecycleBridge:
     def sync_open_orders_snapshot(self, symbol: str, open_orders: List[Dict[str, Any]]) -> None:
         """Merge current IB open-order snapshot into the persisted local order book."""
         pair = str(symbol or "").strip().upper()
+        seen_open_ids: Set[int] = set()
         for item in open_orders or []:
             try:
                 order_id = int(item.get('order_id', 0) or 0)
@@ -616,7 +782,11 @@ class LiveLifecycleBridge:
             if order_id <= 0:
                 continue
 
+            seen_open_ids.add(order_id)
+
             trade_id = self.order_to_trade.get(order_id)
+            raw_status = str(item.get('status', '') or '').upper().replace('_', '')
+            normalized_status = 'API_CANCELLED' if raw_status == 'APICANCELLED' else raw_status
             self._upsert_order_record(
                 order_id,
                 trade_id=trade_id,
@@ -628,12 +798,43 @@ class LiveLifecycleBridge:
                 quantity=float(item.get('quantity', 0.0) or 0.0),
                 filled=float(item.get('filled', 0.0) or 0.0),
                 remaining=float(item.get('remaining', 0.0) or 0.0),
-                status=str(item.get('status', '') or '').upper(),
+                status=normalized_status,
                 tif=str(item.get('tif', '') or '').upper(),
                 limit_price=float(item.get('lmt_price', 0.0) or 0.0) or None,
                 stop_price=float(item.get('aux_price', 0.0) or 0.0) or None,
                 local_symbol=str(item.get('local_symbol', '') or '').upper(),
+                missing_open_snapshots=0,
             )
+
+        # Orders that used to be open but disappear from IB openOrders are likely terminal.
+        # Use a 2-snapshot threshold to avoid transient API/cache gaps.
+        for order_id, record in list(self.order_book.items()):
+            if int(order_id) in seen_open_ids:
+                continue
+
+            rec_symbol = str(record.get('symbol', '') or '').strip().upper()
+            if rec_symbol != pair:
+                continue
+
+            rec_status = str(record.get('status', '') or '').upper()
+            if rec_status in TERMINAL_ORDER_STATES:
+                continue
+
+            miss_count = int(record.get('missing_open_snapshots', 0) or 0) + 1
+            if miss_count < 2:
+                self._upsert_order_record(int(order_id), missing_open_snapshots=miss_count)
+                continue
+
+            self._upsert_order_record(
+                int(order_id),
+                status='CANCELLED',
+                terminal_at=self._dt_string(datetime.now(timezone.utc)),
+                remaining=0.0,
+                missing_open_snapshots=miss_count,
+            )
+            self.logger.info(
+                f"[LIVE-BRIDGE] order_reconcile | order_id={order_id} marked CANCELLED "
+                f"after missing from openOrders for {miss_count} snapshots")
 
     def build_snapshot_document(
         self,
@@ -667,6 +868,7 @@ class LiveLifecycleBridge:
 
         daily_trades = self._daily_trade_records(session_start)
         daily_orders = self._daily_order_records(session_start, pair)
+        daily_parent_orders = self._daily_parent_order_records(session_start, pair)
         ltd_trades = self._ltd_trade_records()
         open_orders = list(open_orders or [])
 
@@ -705,13 +907,14 @@ class LiveLifecycleBridge:
             'as_of_utc': self._dt_string(as_of),
             'last_processed_bar_utc': self._dt_string(last_processed_bar_dt),
             'starting_capital_usd': float(starting_capital_usd),
-            'strategy_state': dict(live_state_snapshot or {}),
+            'strategy_state': self._json_safe(dict(live_state_snapshot or {})),
             'day': {
                 'session_start_utc': self._dt_string(session_start),
                 'start_net_liq_usd': day_start_usd,
                 'start_net_liq_base': day_start_base,
                 'metrics': day_metrics,
                 'orders': daily_orders,
+                'parent_orders': daily_parent_orders,
                 'trades': daily_trades,
             },
             'ltd': {
@@ -721,23 +924,46 @@ class LiveLifecycleBridge:
             'broker': broker_section,
             'bridge_runtime': self.to_dict(),
         }
-        return snapshot
+        return self._json_safe(snapshot)
 
     def save_snapshot_file(self, path, snapshot_document: Dict[str, Any]) -> bool:
         """Persist the 5-minute snapshot document to disk."""
+        target_path = Path(path)
         try:
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as fh:
-                json.dump(snapshot_document, fh, indent=2)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = self._json_safe(dict(snapshot_document or {}))
+            serialized = json.dumps(payload, indent=2)
+
+            temp_path = target_path.with_suffix(target_path.suffix + '.tmp')
+            with open(temp_path, 'w', encoding='utf-8') as fh:
+                fh.write(serialized)
+                fh.flush()
+                os.fsync(fh.fileno())
+            temp_path.replace(target_path)
+
             self.logger.info(
-                f"[SNAPSHOT] Saved → {path} "
+                f"[SNAPSHOT] Saved → {target_path} "
                 f"(instrument={snapshot_document.get('instrument')} day_closed={snapshot_document.get('day', {}).get('metrics', {}).get('trades_closed', 0)} "
                 f"ltd_closed={snapshot_document.get('ltd', {}).get('metrics', {}).get('trades_closed', 0)})"
             )
             return True
         except Exception as exc:
-            self.logger.warning(f"[SNAPSHOT] Could not save snapshot to {path}: {exc}")
-            return False
+            self.logger.warning(f"[SNAPSHOT] Could not save snapshot to {target_path}: {exc}")
+            # Fail-safe: keep snapshot file structurally valid even when payload has bad values.
+            try:
+                fallback = self._build_minimal_empty_snapshot(snapshot_document)
+                serialized = json.dumps(fallback, indent=2)
+                temp_path = target_path.with_suffix(target_path.suffix + '.tmp')
+                with open(temp_path, 'w', encoding='utf-8') as fh:
+                    fh.write(serialized)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                temp_path.replace(target_path)
+                self.logger.warning(f"[SNAPSHOT] Wrote fallback empty snapshot to {target_path} to preserve JSON integrity.")
+                return True
+            except Exception as fallback_exc:
+                self.logger.warning(f"[SNAPSHOT] Fallback empty snapshot write also failed for {target_path}: {fallback_exc}")
+                return False
 
     def _get_trade_by_order_id(self, order_id: int) -> Optional[LiveTradeState]:
         trade_id = self.order_to_trade.get(int(order_id))
@@ -1030,6 +1256,32 @@ class LiveLifecycleBridge:
         rows.sort(key=lambda row: (row.get('created_at') or '', row.get('order_id') or 0))
         return rows
 
+    def _daily_parent_order_records(self, session_start: datetime, instrument: str) -> List[Dict[str, Any]]:
+        """Return parent order records (typically entry MKT) touched in the DAY session."""
+        pair = str(instrument or '').strip().upper()
+        rows: List[Dict[str, Any]] = []
+        for record in self.order_book.values():
+            symbol = str(record.get('symbol', '') or '').strip().upper()
+            if pair and symbol and symbol != pair:
+                continue
+
+            parent_id = int(record.get('parent_id', 0) or 0)
+            order_type = str(record.get('order_type', '') or '').upper()
+            if not (parent_id <= 0 or order_type == 'MKT'):
+                continue
+
+            terminal_at = self._parse_dt(record.get('terminal_at'))
+            updated_at = self._parse_dt(record.get('updated_at'))
+            created_at = self._parse_dt(record.get('created_at'))
+            touched_today = any(dt is not None and dt >= session_start for dt in (terminal_at, updated_at, created_at))
+            if not touched_today:
+                continue
+
+            rows.append(dict(record))
+
+        rows.sort(key=lambda row: (row.get('created_at') or '', row.get('order_id') or 0))
+        return rows
+
     def _build_metrics(self, trades: List[Dict[str, Any]], current_nlv_usd: Optional[float], start_value_usd: Optional[float]) -> Dict[str, Any]:
         closed = [trade for trade in trades if str(trade.get('status', '')).upper() == 'CLOSED']
         entries_filled = sum(1 for trade in trades if self._safe_float(trade.get('filled_size'), 0.0) > 0)
@@ -1092,4 +1344,100 @@ class LiveLifecycleBridge:
         if instrument_nlv and instrument_nlv.get('nlv_base') is not None:
             return float(instrument_nlv['nlv_base'])
         return None
+
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        """Recursively convert objects into JSON-serializable values."""
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {str(k): LiveLifecycleBridge._json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [LiveLifecycleBridge._json_safe(v) for v in value]
+        # Fallback for unexpected runtime objects.
+        return str(value)
+
+    def _build_minimal_empty_snapshot(self, snapshot_document: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build a structurally valid empty snapshot document for recovery writes."""
+        src = dict(snapshot_document or {})
+        instrument = str(src.get('instrument', 'UNKNOWN') or 'UNKNOWN').upper()
+        as_of = self._as_utc_dt(datetime.now(timezone.utc))
+        session_start = self._session_start_utc(as_of)
+        starting_capital = self._safe_float(src.get('starting_capital_usd'), 10000.0) or 10000.0
+
+        empty_metrics = {
+            'trades_closed': 0,
+            'entries_filled': 0,
+            'wins': 0,
+            'losses': 0,
+            'win_rate': 0.0,
+            'profit_factor': float('inf'),
+            'gross_profit_usd': 0.0,
+            'gross_loss_usd': 0.0,
+            'commissions_usd': 0.0,
+            'net_realized_pnl_usd': 0.0,
+            'open_trades': 0,
+            'start_value_usd': starting_capital,
+            'final_value_usd': starting_capital,
+            'total_pnl_usd': 0.0,
+        }
+
+        fallback = {
+            'schema_version': SNAPSHOT_SCHEMA_VERSION,
+            'snapshot_type': SNAPSHOT_TYPE,
+            'instrument': instrument,
+            'timezone': SNAPSHOT_TIMEZONE,
+            'as_of_utc': self._dt_string(as_of),
+            'last_processed_bar_utc': self._dt_string(as_of),
+            'starting_capital_usd': starting_capital,
+            'strategy_state': {
+                'entry_state': 'SCANNING',
+                'armed_direction': None,
+                'pullback_candle_count': 0,
+                'last_pullback_candle_high': None,
+                'last_pullback_candle_low': None,
+                'window_bar_start': None,
+                'window_top_limit': None,
+                'window_bottom_limit': None,
+                'window_expiry_bar': None,
+                'window_breakout_level': None,
+                'signal_trigger_candle': None,
+                'signal_detection_atr': None,
+                'signal_detection_bar': None,
+                'entry_window_start': None,
+                'breakout_target': None,
+            },
+            'day': {
+                'session_start_utc': self._dt_string(session_start),
+                'start_net_liq_usd': starting_capital,
+                'start_net_liq_base': None,
+                'metrics': dict(empty_metrics),
+                'orders': [],
+                'parent_orders': [],
+                'trades': [],
+            },
+            'ltd': {
+                'starting_capital_usd': starting_capital,
+                'metrics': dict(empty_metrics),
+            },
+            'broker': {
+                'positions': [],
+                'totals': {
+                    'market_value_usd_total': 0.0,
+                    'cost_basis_usd_total': 0.0,
+                    'unrealized_pnl_usd_total': 0.0,
+                },
+                'instrument_net_liq': {
+                    'pair': instrument,
+                    'base_currency': instrument[:3] if len(instrument) >= 3 else 'BASE',
+                    'nlv_base': None,
+                    'nlv_usd': starting_capital,
+                },
+                'open_orders': [],
+            },
+            'bridge_runtime': self.to_dict(),
+        }
+        return self._json_safe(fallback)
 
