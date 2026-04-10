@@ -30,3 +30,6 @@ psutil>=5.9.0                 # System monitoring (for performance tracking)
 # pytest>=7.0.0               # Testing framework (uncomment if needed)
 # black>=22.0.0                # Code formatting (uncomment if needed)
 # flake8>=5.0.0                # Code linting (uncomment if needed)
+
+# === IBKR API ===
+ibapi>=9.81.1.post1            # Interactive Brokers TWS/Gateway Python API
