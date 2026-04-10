@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ibapi.client import EClient
+from ibapi.account_summary_tags import AccountSummaryTags
 from ibapi.commission_and_fees_report import CommissionAndFeesReport
 from ibapi.contract import Contract
 from ibapi.execution import Execution, ExecutionFilter
@@ -28,6 +29,11 @@ from ibapi.wrapper import EWrapper
 # Common informational codes that do not require a hard failure.
 _INFO_ERROR_CODES = {2103, 2104, 2105, 2106, 2107, 2108, 2158}
 _FATAL_CONNECTION_CODES = {502, 504, 1100, 1300}
+_IB_UNSET_DOUBLE = 1.7976931348623157e308
+_DEFAULT_ACCOUNT_SUMMARY_TAGS = (
+    "AccountType,NetLiquidation,TotalCashValue,BuyingPower,EquityWithLoanValue,"
+    "GrossPositionValue,AvailableFunds,ExcessLiquidity,Cushion,Leverage"
+)
 
 
 @dataclass
@@ -35,6 +41,10 @@ class RequestContext:
     open_orders_done: threading.Event = field(default_factory=threading.Event)
     completed_orders_done: threading.Event = field(default_factory=threading.Event)
     executions_done: threading.Event = field(default_factory=threading.Event)
+    account_summary_done: threading.Event = field(default_factory=threading.Event)
+    positions_done: threading.Event = field(default_factory=threading.Event)
+    pnl_done: threading.Event = field(default_factory=threading.Event)
+    pnl_single_done: threading.Event = field(default_factory=threading.Event)
 
 
 class IBKROrderManagementApp(EWrapper, EClient):
@@ -54,6 +64,12 @@ class IBKROrderManagementApp(EWrapper, EClient):
         self.completed_orders: list[dict[str, Any]] = []
         self.executions: list[dict[str, Any]] = []
         self.commissions_by_exec_id: dict[str, dict[str, Any]] = {}
+        self.account_summary_rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.positions_rows: list[dict[str, Any]] = []
+        self.account_pnl_rows: dict[int, dict[str, Any]] = {}
+        self.position_pnl_rows: dict[int, dict[str, Any]] = {}
+        self.position_pnl_req_meta: dict[int, dict[str, Any]] = {}
+        self.position_pnl_events: dict[int, threading.Event] = {}
         self.errors: list[dict[str, Any]] = []
         self.request_errors_by_id: dict[int, dict[str, Any]] = {}
         self.pending_execution_req_ids: set[int] = set()
@@ -303,6 +319,79 @@ class IBKROrderManagementApp(EWrapper, EClient):
         _ = reqId
         self.requests.executions_done.set()
 
+    def accountSummary(self, reqId: int, account: str, tag: str, value: str, currency: str) -> None:  # noqa: N802
+        _ = reqId
+        key = (str(account or ""), str(tag or ""), str(currency or ""))
+        self.account_summary_rows[key] = {
+            "account": key[0],
+            "tag": key[1],
+            "value": str(value or ""),
+            "currency": key[2],
+        }
+
+    def accountSummaryEnd(self, reqId: int) -> None:  # noqa: N802
+        _ = reqId
+        self.requests.account_summary_done.set()
+
+    def position(self, account: str, contract: Contract, position: Any, avgCost: float) -> None:  # noqa: N802
+        self.positions_rows.append(
+            {
+                "account": str(account or ""),
+                "conId": getattr(contract, "conId", None),
+                "symbol": getattr(contract, "symbol", ""),
+                "currency": getattr(contract, "currency", ""),
+                "secType": getattr(contract, "secType", ""),
+                "exchange": getattr(contract, "exchange", ""),
+                "localSymbol": getattr(contract, "localSymbol", ""),
+                "finInstrument": _build_fin_instrument(
+                    getattr(contract, "symbol", ""),
+                    getattr(contract, "currency", ""),
+                    getattr(contract, "secType", ""),
+                    getattr(contract, "localSymbol", ""),
+                ),
+                "position": position,
+                "avgCost": avgCost,
+            }
+        )
+
+    def positionEnd(self) -> None:  # noqa: N802
+        self.requests.positions_done.set()
+
+    def pnl(self, reqId: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float) -> None:  # noqa: N802
+        self.account_pnl_rows[reqId] = {
+            "reqId": reqId,
+            "dailyPnL": _sanitize_ib_double(dailyPnL),
+            "unrealizedPnL": _sanitize_ib_double(unrealizedPnL),
+            "realizedPnL": _sanitize_ib_double(realizedPnL),
+        }
+        self.requests.pnl_done.set()
+
+    def pnlSingle(  # noqa: N802
+        self,
+        reqId: int,
+        pos: Any,
+        dailyPnL: float,
+        unrealizedPnL: float,
+        realizedPnL: float,
+        value: float,
+    ) -> None:
+        meta = self.position_pnl_req_meta.get(reqId, {})
+        self.position_pnl_rows[reqId] = {
+            "reqId": reqId,
+            "account": meta.get("account", ""),
+            "conId": meta.get("conId", ""),
+            "symbol": meta.get("symbol", ""),
+            "finInstrument": meta.get("finInstrument", ""),
+            "position": pos,
+            "dailyPnL": _sanitize_ib_double(dailyPnL),
+            "unrealizedPnL": _sanitize_ib_double(unrealizedPnL),
+            "realizedPnL": _sanitize_ib_double(realizedPnL),
+            "value": _sanitize_ib_double(value),
+        }
+        done_event = self.position_pnl_events.get(reqId)
+        if done_event:
+            done_event.set()
+
     def commissionReport(self, commissionReport: Any) -> None:  # noqa: N802
         self._store_commission_report(commissionReport)
 
@@ -416,6 +505,90 @@ class IBKROrderManagementApp(EWrapper, EClient):
                 f"Execution request failed (reqId={req_id}, code={request_error['code']}): {request_error['message']}"
             )
 
+    def request_account_summary(self, req_id: int, group: str, tags: str, timeout_seconds: float) -> None:
+        self.requests.account_summary_done.clear()
+        self.account_summary_rows.clear()
+        self.reqAccountSummary(req_id, group, tags)
+        try:
+            self._wait_or_raise(self.requests.account_summary_done, "account summary", timeout_seconds)
+        finally:
+            # Ensure streaming account summary request is cleaned up.
+            self.cancelAccountSummary(req_id)
+
+    def request_positions(self, timeout_seconds: float) -> None:
+        self.requests.positions_done.clear()
+        self.positions_rows.clear()
+        self.reqPositions()
+        try:
+            self._wait_or_raise(self.requests.positions_done, "positions", timeout_seconds)
+        finally:
+            # reqPositions is a subscription; cancel after initial snapshot.
+            self.cancelPositions()
+
+    def request_account_pnl(self, req_id: int, account: str, model_code: str, timeout_seconds: float) -> None:
+        if not account:
+            return
+
+        self.requests.pnl_done.clear()
+        self.account_pnl_rows.pop(req_id, None)
+        self.reqPnL(req_id, account, model_code)
+        got_update = self.requests.pnl_done.wait(timeout=timeout_seconds)
+        self.cancelPnL(req_id)
+        if not got_update:
+            print(f"[IBKR][warn] No account PnL update received for account={account} within {timeout_seconds:.1f}s")
+
+    def request_positions_pnl(
+        self,
+        start_req_id: int,
+        account: str,
+        model_code: str,
+        timeout_seconds: float,
+        max_positions: int,
+    ) -> None:
+        if max_positions <= 0:
+            return
+
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for row in self.positions_rows:
+            con_id = int(row.get("conId") or 0)
+            row_account = str(row.get("account") or "")
+            if con_id <= 0:
+                continue
+            if account and row_account and row_account != account:
+                continue
+            key = (row_account, con_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(row)
+
+        for index, row in enumerate(candidates[:max_positions]):
+            req_id = start_req_id + index
+            row_account = str(row.get("account") or account or "")
+            con_id = int(row.get("conId") or 0)
+            done_event = threading.Event()
+
+            self.position_pnl_events[req_id] = done_event
+            self.position_pnl_req_meta[req_id] = {
+                "account": row_account,
+                "conId": con_id,
+                "symbol": row.get("symbol", ""),
+                "finInstrument": row.get("finInstrument", ""),
+            }
+            self.position_pnl_rows.pop(req_id, None)
+
+            self.reqPnLSingle(req_id, row_account, model_code, con_id)
+            got_update = done_event.wait(timeout=timeout_seconds)
+            self.cancelPnLSingle(req_id)
+            self.position_pnl_events.pop(req_id, None)
+
+            if not got_update:
+                print(
+                    f"[IBKR][warn] No position PnL update for account={row_account} conId={con_id} "
+                    f"within {timeout_seconds:.1f}s"
+                )
+
     @staticmethod
     def _wait_or_raise(event: threading.Event, label: str, timeout_seconds: float) -> None:
         if not event.wait(timeout=timeout_seconds):
@@ -437,6 +610,21 @@ def _load_credentials(credentials_path: Path) -> dict[str, Any]:
         "port": int(loaded.get("port", 7497)),
         "clientId": int(loaded.get("clientId", 1)),
     }
+
+
+def _get_all_account_summary_tags() -> str:
+    get_all = getattr(AccountSummaryTags, "GetAllTags", None)
+    if callable(get_all):
+        tags = get_all()
+        if tags:
+            return str(tags)
+
+    # Some ibapi versions expose this as a static attribute instead of a method.
+    all_tags = getattr(AccountSummaryTags, "AllTags", "")
+    if all_tags:
+        return str(all_tags)
+
+    return _DEFAULT_ACCOUNT_SUMMARY_TAGS
 
 
 def _clean_value(value: Any) -> str:
@@ -475,6 +663,15 @@ def _to_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     if not math.isfinite(parsed):
+        return None
+    return parsed
+
+
+def _sanitize_ib_double(value: Any) -> float | None:
+    parsed = _to_float(value)
+    if parsed is None:
+        return None
+    if parsed >= _IB_UNSET_DOUBLE * 0.99:
         return None
     return parsed
 
@@ -520,6 +717,10 @@ def _normalize_fin_instrument_key(value: Any) -> str:
     return "".join(ch for ch in text if ch.isalnum())
 
 
+def _is_missing_order_id(value: Any) -> bool:
+    return value in (None, "", 0, "0")
+
+
 def _apply_fin_instrument_filter(rows: list[dict[str, Any]], fin_instrument_filter: str) -> list[dict[str, Any]]:
     needle = _normalize_fin_instrument_key(fin_instrument_filter)
     if not needle:
@@ -541,10 +742,34 @@ def _build_execution_report_rows(app: IBKROrderManagementApp) -> list[dict[str, 
         parent_perm_id = execution.get("parentPermId", "")
 
         if parent_id in (None, ""):
-            order_row = next(
-                (row for row in app.open_orders.values() if int(row.get("orderId") or 0) == int(execution.get("orderId") or 0)),
-                None,
-            )
+            exec_order_id = int(execution.get("orderId") or 0)
+            exec_perm_id = int(execution.get("permId") or 0)
+
+            # Try to find parent from open orders first (by orderId, then by permId)
+            order_row = None
+            if exec_order_id:
+                order_row = next(
+                    (row for row in app.open_orders.values() if int(row.get("orderId") or 0) == exec_order_id),
+                    None,
+                )
+            if not order_row and exec_perm_id:
+                order_row = next(
+                    (row for row in app.open_orders.values() if int(row.get("permId") or 0) == exec_perm_id),
+                    None,
+                )
+
+            # If not found in open orders, check completed orders (by orderId, then by permId)
+            if not order_row and exec_order_id:
+                order_row = next(
+                    (row for row in app.completed_orders if int(row.get("orderId") or 0) == exec_order_id),
+                    None,
+                )
+            if not order_row and exec_perm_id:
+                order_row = next(
+                    (row for row in app.completed_orders if int(row.get("permId") or 0) == exec_perm_id),
+                    None,
+                )
+
             if order_row:
                 parent_id = order_row.get("parentId", "")
                 parent_perm_id = order_row.get("parentPermId", "")
@@ -598,7 +823,48 @@ def _build_open_orders_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]
 
 
 def _build_completed_orders_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
-    rows = list(app.completed_orders)
+    rows: list[dict[str, Any]] = []
+
+    executions_by_perm_id = {
+        int(execution.get("permId") or 0): execution
+        for execution in app.executions
+        if int(execution.get("permId") or 0)
+    }
+    open_orders_by_perm_id = {
+        int(row.get("permId") or 0): row
+        for row in app.open_orders.values()
+        if int(row.get("permId") or 0)
+    }
+
+    for original_row in app.completed_orders:
+        row = dict(original_row)
+        perm_id = int(row.get("permId") or 0)
+
+        if _is_missing_order_id(row.get("orderId")) and perm_id:
+            execution = executions_by_perm_id.get(perm_id)
+            open_order = open_orders_by_perm_id.get(perm_id)
+
+            if execution and not _is_missing_order_id(execution.get("orderId")):
+                row["orderId"] = execution.get("orderId")
+                row["orderIdSource"] = "execDetails"
+            elif open_order and not _is_missing_order_id(open_order.get("orderId")):
+                row["orderId"] = open_order.get("orderId")
+                row["orderIdSource"] = "openOrder"
+
+            if execution:
+                if row.get("parentId") in (None, "") and execution.get("parentId") not in (None, ""):
+                    row["parentId"] = execution.get("parentId")
+                if row.get("parentPermId") in (None, "") and execution.get("parentPermId") not in (None, ""):
+                    row["parentPermId"] = execution.get("parentPermId")
+
+            if open_order:
+                if row.get("parentId") in (None, "") and open_order.get("parentId") not in (None, ""):
+                    row["parentId"] = open_order.get("parentId")
+                if row.get("parentPermId") in (None, "") and open_order.get("parentPermId") not in (None, ""):
+                    row["parentPermId"] = open_order.get("parentPermId")
+
+        rows.append(row)
+
     rows.sort(key=lambda row: (str(row.get("completedTime", "")), int(row.get("orderId") or 0)))
     return rows
 
@@ -640,14 +906,56 @@ def _build_execution_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
     return output
 
 
+def _build_account_summary_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
+    rows = list(app.account_summary_rows.values())
+    rows.sort(key=lambda row: (str(row.get("account", "")), str(row.get("tag", "")), str(row.get("currency", ""))))
+    return rows
+
+
+def _build_positions_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
+    rows = list(app.positions_rows)
+    rows.sort(
+        key=lambda row: (
+            str(row.get("account", "")),
+            str(row.get("finInstrument", "")),
+            str(row.get("symbol", "")),
+        )
+    )
+    return rows
+
+
+def _build_account_pnl_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
+    rows = list(app.account_pnl_rows.values())
+    rows.sort(key=lambda row: int(row.get("reqId") or 0))
+    return rows
+
+
+def _build_position_pnl_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
+    rows = list(app.position_pnl_rows.values())
+    rows.sort(
+        key=lambda row: (
+            str(row.get("account", "")),
+            str(row.get("finInstrument", "")),
+            int(row.get("conId") or 0),
+        )
+    )
+    return rows
+
+
 def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") -> None:
     open_rows = _build_open_orders_rows(app)
     completed_rows = _build_completed_orders_rows(app)
     execution_rows = _build_execution_report_rows(app)
+    account_summary_rows = _build_account_summary_rows(app)
+    positions_rows = _build_positions_rows(app)
+    account_pnl_rows = _build_account_pnl_rows(app)
+    position_pnl_rows = _build_position_pnl_rows(app)
 
     open_rows = _apply_fin_instrument_filter(open_rows, fin_instrument_filter)
     completed_rows = _apply_fin_instrument_filter(completed_rows, fin_instrument_filter)
     execution_rows = _apply_fin_instrument_filter(execution_rows, fin_instrument_filter)
+    positions_rows = _apply_fin_instrument_filter(positions_rows, fin_instrument_filter)
+    position_pnl_rows = _apply_fin_instrument_filter(position_pnl_rows, fin_instrument_filter)
 
     execution_summary = _build_execution_summary(execution_rows)
 
@@ -655,7 +963,66 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
     print(
         f"AsOfUTC={datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} "
         f"OpenOrders={len(open_rows)} CompletedOrders={len(completed_rows)} "
-        f"Executions={len(execution_rows)} Commissions={len(app.commissions_by_exec_id)}"
+        f"Executions={len(execution_rows)} Commissions={len(app.commissions_by_exec_id)} "
+        f"AccountSummary={len(account_summary_rows)} Positions={len(positions_rows)} "
+        f"AcctPnL={len(account_pnl_rows)} PosPnL={len(position_pnl_rows)}"
+    )
+
+    print(
+        _format_table(
+            "ACCOUNT SUMMARY (reqAccountSummary)",
+            account_summary_rows,
+            [("account", "account"), ("tag", "tag"), ("value", "value"), ("ccy", "currency")],
+        )
+    )
+
+    print(
+        _format_table(
+            "POSITIONS (reqPositions)",
+            positions_rows,
+            [
+                ("account", "account"),
+                ("conId", "conId"),
+                ("symbol", "symbol"),
+                ("finInstr", "finInstrument"),
+                ("secType", "secType"),
+                ("ccy", "currency"),
+                ("exchange", "exchange"),
+                ("position", "position"),
+                ("avgCost", "avgCost"),
+            ],
+        )
+    )
+
+    print(
+        _format_table(
+            "ACCOUNT P&L (reqPnL)",
+            account_pnl_rows,
+            [
+                ("reqId", "reqId"),
+                ("dailyPnL", "dailyPnL"),
+                ("unrealizedPnL", "unrealizedPnL"),
+                ("realizedPnL", "realizedPnL"),
+            ],
+        )
+    )
+
+    print(
+        _format_table(
+            "POSITION P&L (reqPnLSingle)",
+            position_pnl_rows,
+            [
+                ("account", "account"),
+                ("conId", "conId"),
+                ("symbol", "symbol"),
+                ("finInstr", "finInstrument"),
+                ("position", "position"),
+                ("value", "value"),
+                ("dailyPnL", "dailyPnL"),
+                ("unrealizedPnL", "unrealizedPnL"),
+                ("realizedPnL", "realizedPnL"),
+            ],
+        )
     )
 
     print(
@@ -814,6 +1181,27 @@ def parse_args() -> argparse.Namespace:
         help="Execution filter lookback in days (practical limit depends on TWS/IBG setting).",
     )
     parser.add_argument("--exec-req-id", type=int, default=9001, help="Request id for reqExecutions")
+    parser.add_argument("--account-summary-req-id", type=int, default=9101, help="Request id for reqAccountSummary")
+    parser.add_argument("--account-summary-group", type=str, default="All", help="Group for reqAccountSummary (default: All)")
+    parser.add_argument(
+        "--account-summary-tags",
+        type=str,
+        default=_DEFAULT_ACCOUNT_SUMMARY_TAGS,
+        help="CSV tags for reqAccountSummary",
+    )
+    parser.add_argument(
+        "--account-summary-all-tags",
+        action="store_true",
+        help="Use full IB account summary tag set (AccountSummaryTags.GetAllTags/AllTags)",
+    )
+    parser.add_argument("--skip-account-summary", action="store_true", help="Skip reqAccountSummary")
+    parser.add_argument("--skip-positions", action="store_true", help="Skip reqPositions")
+    parser.add_argument("--skip-pnl", action="store_true", help="Skip reqPnL and reqPnLSingle")
+    parser.add_argument("--pnl-account", type=str, default="", help="Account for reqPnL/reqPnLSingle (auto-resolve if omitted)")
+    parser.add_argument("--pnl-model-code", type=str, default="", help="Model code for reqPnL/reqPnLSingle")
+    parser.add_argument("--pnl-req-id", type=int, default=9401, help="Request id for reqPnL")
+    parser.add_argument("--pnl-single-start-req-id", type=int, default=9501, help="Starting request id for reqPnLSingle batch")
+    parser.add_argument("--pnl-single-max-positions", type=int, default=25, help="Maximum positions to query via reqPnLSingle")
 
     return parser.parse_args()
 
@@ -841,6 +1229,43 @@ def main() -> int:
             timeout_seconds=args.timeout,
             execution_filter=_build_execution_filter(args),
         )
+        if not args.skip_account_summary:
+            account_summary_tags = _get_all_account_summary_tags() if args.account_summary_all_tags else args.account_summary_tags
+            app.request_account_summary(
+                req_id=args.account_summary_req_id,
+                group=args.account_summary_group,
+                tags=account_summary_tags,
+                timeout_seconds=args.timeout,
+            )
+        if not args.skip_positions:
+            app.request_positions(timeout_seconds=args.timeout)
+        if not args.skip_pnl:
+            pnl_account = str(args.pnl_account or "").strip()
+            if not pnl_account:
+                pnl_account = str(args.account or "").strip()
+            if not pnl_account:
+                pnl_account = next((str(row.get("account") or "").strip() for row in app.positions_rows if str(row.get("account") or "").strip()), "")
+            if not pnl_account:
+                pnl_account = next((str(row.get("account") or "").strip() for row in app.account_summary_rows.values() if str(row.get("account") or "").strip()), "")
+            if not pnl_account:
+                pnl_account = next((str(row.get("account") or "").strip() for row in app.completed_orders if str(row.get("account") or "").strip()), "")
+
+            if pnl_account:
+                app.request_account_pnl(
+                    req_id=args.pnl_req_id,
+                    account=pnl_account,
+                    model_code=args.pnl_model_code,
+                    timeout_seconds=args.timeout,
+                )
+                app.request_positions_pnl(
+                    start_req_id=args.pnl_single_start_req_id,
+                    account=pnl_account,
+                    model_code=args.pnl_model_code,
+                    timeout_seconds=args.timeout,
+                    max_positions=args.pnl_single_max_positions,
+                )
+            else:
+                print("[IBKR][warn] Skipping PnL requests because no account code could be resolved.")
 
         print_reports(app, fin_instrument_filter=args.fin_instrument)
         elapsed = time.time() - start_ts
