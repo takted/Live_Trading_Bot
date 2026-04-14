@@ -1,33 +1,32 @@
 {
   "enabled": true,
-  "total_capital_usd": 100000.0,
-  "default_instrument_allocation_usd": 10000.0,
+  "total_capital_usd": 50000.0,
+  "default_instrument_allocation_usd": 5000.0,
   "risk_per_trade_percent": 0.01,
   "risk_per_trade_usd": null,
-  "default_max_simultaneous_positions_per_symbol": 2,
+  "default_max_simultaneous_positions_per_symbol": 1,
   "instrument_allocations_usd": {
-    "AUDUSD": 10000.0,
-    "EURUSD": 10000.0,
-    "GBPUSD": 10000.0,
-    "NZDUSD": 10000.0,
-    "USDCHF": 10000.0,
-    "USDJPY": 10000.0,
-    "GBPJPY": 10000.0,
-    "EURJPY": 10000.0,
-    "EURGBP": 10000.0,
-    "USDCAD": 10000.0
+    "AUDUSD": 5000.0,
+    "EURUSD": 5000.0,
+    "GBPUSD": 5000.0,
+    "NZDUSD": 5000.0,
+    "USDCHF": 5000.0,
+    "USDJPY": 5000.0,
+    "GBPJPY": 5000.0,
+    "EURJPY": 5000.0,
+    "EURGBP": 5000.0,
+    "USDCAD": 5000.0
   },
   "instrument_max_positions": {
-    "AUDUSD": 2,
-    "EURUSD": 2,
-    "GBPUSD": 2,
-    "NZDUSD": 2,
-    "USDCHF": 2,
-    "USDJPY": 2,
-    "GBPJPY": 2,
-    "EURJPY": 2,
-    "EURGBP": 2,
-    "USDCAD": 2
+    "AUDUSD": 1,
+    "EURUSD": 1,
+    "GBPUSD": 1,
+    "NZDUSD": 1,
+    "USDCHF": 1,
+    "USDJPY": 1,
+    "GBPJPY": 1,
+    "EURJPY": 1,
+    "EURGBP": 1,
+    "USDCAD": 1
   }
 }
-

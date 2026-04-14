@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEMO_MODE_ONLY = False
 MAX_RISK_PER_TRADE = 0.01
 MAX_DAILY_TRADES = 3
-MAX_POSITION_SIZE = 0.2
+MAX_POSITION_SIZE = 1.0  # Global fallback — explicit per-instrument cap via max_position_size_fraction in JSON configs
 ENABLE_TRADE_CONFIRMATION = True
 
 # === IBKR CONNECTION SETTINGS ===

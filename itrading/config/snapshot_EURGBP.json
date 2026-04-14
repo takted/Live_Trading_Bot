@@ -3,8 +3,8 @@
   "snapshot_type": "5-minute instrument snapshot",
   "instrument": "EURGBP",
   "timezone": "America/New_York",
-  "as_of_utc": "2026-04-08T20:50:00+00:00",
-  "last_processed_bar_utc": "2026-04-08T20:50:00+00:00",
+  "as_of_utc": "2026-04-13T18:25:00+00:00",
+  "last_processed_bar_utc": "2026-04-13T18:25:00+00:00",
   "starting_capital_usd": 10000.0,
   "strategy_state": {
     "entry_state": "SCANNING",
@@ -18,15 +18,15 @@
     "window_expiry_bar": null,
     "window_breakout_level": null,
     "signal_trigger_candle": null,
-    "signal_detection_atr": null,
+    "signal_detection_atr": 0.0001840931025257534,
     "signal_detection_bar": null,
     "entry_window_start": null,
     "breakout_target": null
   },
   "day": {
-    "session_start_utc": "2026-04-07T21:00:00+00:00",
-    "start_net_liq_usd": 8006.562130100001,
-    "start_net_liq_base": 7243.0,
+    "session_start_utc": "2026-04-12T21:00:00+00:00",
+    "start_net_liq_usd": 10000.0,
+    "start_net_liq_base": null,
     "metrics": {
       "trades_closed": 0,
       "entries_filled": 0,
@@ -39,80 +39,12 @@
       "commissions_usd": 0.0,
       "net_realized_pnl_usd": 0.0,
       "open_trades": 0,
-      "start_value_usd": 8006.562130100001,
-      "final_value_usd": 8006.3321648500005,
-      "total_pnl_usd": -0.22996525000053225
+      "start_value_usd": 10000.0,
+      "final_value_usd": 10000.0,
+      "total_pnl_usd": 0.0
     },
-    "orders": [
-      {
-        "order_id": 19,
-        "created_at": "2026-04-08T20:46:00.438920+00:00",
-        "symbol": "EURGBP",
-        "perm_id": 994463963,
-        "parent_id": 18,
-        "action": "SELL",
-        "order_type": "LMT",
-        "quantity": 3621.0,
-        "filled": 0.0,
-        "remaining": 3621.0,
-        "status": "SUBMITTED",
-        "tif": "GTC",
-        "limit_price": 0.87169,
-        "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:50:07.893079+00:00"
-      },
-      {
-        "order_id": 20,
-        "created_at": "2026-04-08T20:46:00.439293+00:00",
-        "symbol": "EURGBP",
-        "perm_id": 994463964,
-        "parent_id": 18,
-        "action": "SELL",
-        "order_type": "STP",
-        "quantity": 3621.0,
-        "filled": 0.0,
-        "remaining": 3621.0,
-        "status": "PRESUBMITTED",
-        "tif": "GTC",
-        "stop_price": 0.86824,
-        "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:50:07.893118+00:00"
-      },
-      {
-        "order_id": 23,
-        "created_at": "2026-04-08T20:46:00.439327+00:00",
-        "symbol": "EURGBP",
-        "perm_id": 994463967,
-        "parent_id": 22,
-        "action": "SELL",
-        "order_type": "LMT",
-        "quantity": 3622.0,
-        "filled": 0.0,
-        "remaining": 3622.0,
-        "status": "SUBMITTED",
-        "tif": "GTC",
-        "limit_price": 0.87171,
-        "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:50:07.893143+00:00"
-      },
-      {
-        "order_id": 24,
-        "created_at": "2026-04-08T20:46:00.439350+00:00",
-        "symbol": "EURGBP",
-        "perm_id": 994463968,
-        "parent_id": 22,
-        "action": "SELL",
-        "order_type": "STP",
-        "quantity": 3622.0,
-        "filled": 0.0,
-        "remaining": 3622.0,
-        "status": "PRESUBMITTED",
-        "tif": "GTC",
-        "stop_price": 0.86822,
-        "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:50:07.893162+00:00"
-      }
-    ],
+    "orders": [],
+    "parent_orders": [],
     "trades": []
   },
   "ltd": {
@@ -130,97 +62,24 @@
       "net_realized_pnl_usd": 0.0,
       "open_trades": 0,
       "start_value_usd": 10000.0,
-      "final_value_usd": 8006.3321648500005,
-      "total_pnl_usd": -1993.6678351499995
+      "final_value_usd": 10000.0,
+      "total_pnl_usd": 0.0
     }
   },
   "broker": {
-    "positions": [
-      {
-        "symbol": "EUR",
-        "currency": "GBP",
-        "sec_type": "CASH",
-        "qty": 7243.0,
-        "avg_cost": 0.8700861343925217,
-        "market_value_base": 7243.0,
-        "market_value_usd": 8006.3321648500005,
-        "cost_basis_usd": 8003.583016684394,
-        "unrealized_pnl_usd": 2.7491481656061296
-      }
-    ],
+    "positions": [],
     "totals": {
-      "market_value_usd_total": 8006.3321648500005,
-      "cost_basis_usd_total": 8003.583016684394,
-      "unrealized_pnl_usd_total": 2.7491481656061296
+      "market_value_usd_total": 0.0,
+      "cost_basis_usd_total": 0.0,
+      "unrealized_pnl_usd_total": 0.0
     },
     "instrument_net_liq": {
       "pair": "EURGBP",
       "base_currency": "EUR",
-      "nlv_base": 7243.0,
-      "nlv_usd": 8006.3321648500005
+      "nlv_base": null,
+      "nlv_usd": 10000.0
     },
-    "open_orders": [
-      {
-        "order_id": 19,
-        "perm_id": 994463963,
-        "parent_id": 18,
-        "action": "SELL",
-        "order_type": "LMT",
-        "quantity": 3621.0,
-        "filled": 0.0,
-        "remaining": 3621.0,
-        "status": "SUBMITTED",
-        "lmt_price": 0.87169,
-        "aux_price": 0.0,
-        "tif": "GTC",
-        "local_symbol": "EUR.GBP"
-      },
-      {
-        "order_id": 20,
-        "perm_id": 994463964,
-        "parent_id": 18,
-        "action": "SELL",
-        "order_type": "STP",
-        "quantity": 3621.0,
-        "filled": 0.0,
-        "remaining": 3621.0,
-        "status": "PRESUBMITTED",
-        "lmt_price": 0.0,
-        "aux_price": 0.86824,
-        "tif": "GTC",
-        "local_symbol": "EUR.GBP"
-      },
-      {
-        "order_id": 23,
-        "perm_id": 994463967,
-        "parent_id": 22,
-        "action": "SELL",
-        "order_type": "LMT",
-        "quantity": 3622.0,
-        "filled": 0.0,
-        "remaining": 3622.0,
-        "status": "SUBMITTED",
-        "lmt_price": 0.87171,
-        "aux_price": 0.0,
-        "tif": "GTC",
-        "local_symbol": "EUR.GBP"
-      },
-      {
-        "order_id": 24,
-        "perm_id": 994463968,
-        "parent_id": 22,
-        "action": "SELL",
-        "order_type": "STP",
-        "quantity": 3622.0,
-        "filled": 0.0,
-        "remaining": 3622.0,
-        "status": "PRESUBMITTED",
-        "lmt_price": 0.0,
-        "aux_price": 0.86822,
-        "tif": "GTC",
-        "local_symbol": "EUR.GBP"
-      }
-    ]
+    "open_orders": []
   },
   "bridge_runtime": {
     "_next_trade_id": 1,
@@ -246,12 +105,14 @@
         "order_type": "LMT",
         "quantity": 3621.0,
         "filled": 0.0,
-        "remaining": 3621.0,
-        "status": "SUBMITTED",
+        "remaining": 0.0,
+        "status": "CANCELLED",
         "tif": "GTC",
         "limit_price": 0.87169,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:50:07.893079+00:00"
+        "updated_at": "2026-04-10T15:18:07.862876+00:00",
+        "missing_open_snapshots": 2,
+        "terminal_at": "2026-04-10T15:18:07.862854+00:00"
       },
       "20": {
         "order_id": 20,
@@ -263,12 +124,14 @@
         "order_type": "STP",
         "quantity": 3621.0,
         "filled": 0.0,
-        "remaining": 3621.0,
-        "status": "PRESUBMITTED",
+        "remaining": 0.0,
+        "status": "CANCELLED",
         "tif": "GTC",
         "stop_price": 0.86824,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:50:07.893118+00:00"
+        "updated_at": "2026-04-10T15:18:07.863364+00:00",
+        "missing_open_snapshots": 2,
+        "terminal_at": "2026-04-10T15:18:07.863340+00:00"
       },
       "23": {
         "order_id": 23,
@@ -280,12 +143,14 @@
         "order_type": "LMT",
         "quantity": 3622.0,
         "filled": 0.0,
-        "remaining": 3622.0,
-        "status": "SUBMITTED",
+        "remaining": 0.0,
+        "status": "CANCELLED",
         "tif": "GTC",
         "limit_price": 0.87171,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:50:07.893143+00:00"
+        "updated_at": "2026-04-10T15:18:07.863728+00:00",
+        "missing_open_snapshots": 2,
+        "terminal_at": "2026-04-10T15:18:07.863709+00:00"
       },
       "24": {
         "order_id": 24,
@@ -297,12 +162,14 @@
         "order_type": "STP",
         "quantity": 3622.0,
         "filled": 0.0,
-        "remaining": 3622.0,
-        "status": "PRESUBMITTED",
+        "remaining": 0.0,
+        "status": "CANCELLED",
         "tif": "GTC",
         "stop_price": 0.86822,
         "local_symbol": "EUR.GBP",
-        "updated_at": "2026-04-08T20:50:07.893162+00:00"
+        "updated_at": "2026-04-10T15:18:07.864037+00:00",
+        "missing_open_snapshots": 2,
+        "terminal_at": "2026-04-10T15:18:07.864021+00:00"
       }
     },
     "tracked_exec_ids": [],

@@ -417,6 +417,7 @@ class ITradingStrategy(bt.Strategy):
         # === REPORTING & DEBUGGING ===
         verbose_debug=True,
         print_signals=True,
+        print_summary=False,         # Print === ITRADING SUMMARY === block at strategy stop (set True to enable)
         export_trade_reports=True,
         lifecycle_logging=False,  # Compact lifecycle logger (init/prenext/next1/notify_order/notify_trade/stop)
         dataname=None,
@@ -4376,9 +4377,7 @@ class ITradingStrategy(bt.Strategy):
                 self.cancel(self.limit_order)
                 self.limit_order = None
 
-        # Enhanced summary calculation with debug stats.
-        print("=== ITRADING SUMMARY ===")
-
+        # Enhanced summary calculation (always computed; printing controlled by print_summary param).
         wr = (display_wins / display_trades * 100.0) if display_trades else 0.0
         pf = (display_gross_profit / display_gross_loss) if display_gross_loss > 0 else float('inf')
 
@@ -4415,82 +4414,85 @@ class ITradingStrategy(bt.Strategy):
         current_total_pnl_ltd = current_final_value - starting_cash if current_final_value is not None else total_pnl
         current_total_pnl_day = current_final_value - day_start_value if (current_final_value is not None and day_start_value is not None) else day_metrics.get('total_pnl_usd', total_pnl)
 
-        if self.p.live_trading and live_snapshot is not None:
-            day_trades_closed = int(day_metrics.get('trades_closed', 0))
-            day_entries_filled = int(day_metrics.get('entries_filled', display_entries_filled or 0))
-            day_wins = int(day_metrics.get('wins', 0))
-            day_losses = int(day_metrics.get('losses', 0))
-            day_win_rate = float(day_metrics.get('win_rate', 0.0) or 0.0)
-            day_pf = float(day_metrics.get('profit_factor', float('inf')) or float('inf'))
-            day_commissions = float(day_metrics.get('commissions_usd', 0.0) or 0.0)
-            ltd_trades_closed = int(ltd_metrics.get('trades_closed', display_trades))
-            ltd_entries_filled = int(ltd_metrics.get('entries_filled', display_entries_filled or display_trades))
-            ltd_wins = int(ltd_metrics.get('wins', display_wins))
-            ltd_losses = int(ltd_metrics.get('losses', display_losses))
-            ltd_win_rate = float(ltd_metrics.get('win_rate', wr) or 0.0)
-            ltd_pf = float(ltd_metrics.get('profit_factor', pf) or 0.0)
-            ltd_commissions = float(ltd_metrics.get('commissions_usd', live_commissions) or 0.0)
-            ltd_open_trades = int(ltd_metrics.get('open_trades', display_open_trades or 0))
-            day_open_trades = int(day_metrics.get('open_trades', display_open_trades or 0))
-
-            def _pf_text(value):
-                return f"{value:.2f}" if math.isfinite(value) else "inf"
-
-            self._print_day_ltd_rows([
-                ("Trades (Closed)", f"{day_trades_closed}", f"{ltd_trades_closed}"),
-                ("Entries Filled", f"{day_entries_filled}", f"{ltd_entries_filled}"),
-                ("Wins", f"{day_wins}", f"{ltd_wins}"),
-                ("Losses", f"{day_losses}", f"{ltd_losses}"),
-                ("Win Rate", f"{day_win_rate:.2f}%", f"{ltd_win_rate:.2f}%"),
-                ("Profit Factor", _pf_text(day_pf), _pf_text(ltd_pf)),
-                ("Commissions (USD)", f"{day_commissions:+,.2f}", f"{ltd_commissions:+,.2f}"),
-                ("Open Trades", f"{day_open_trades}", f"{ltd_open_trades}"),
-                ("Start Value (USD)", f"{day_start_value:,.2f}", f"{starting_cash:,.2f}"),
-                ("Current Final Value (USD)", f"{current_final_value:,.2f}", f"{current_final_value:,.2f}"),
-                ("Total PnL (USD)", f"{current_total_pnl_day:+,.2f}", f"{current_total_pnl_ltd:+,.2f}"),
-            ])
-        else:
-            summary_rows = [
-                ("Trades (Closed/Entries)", f"{display_trades}"),
-                ("Wins", f"{display_wins}"),
-                ("Losses", f"{display_losses}"),
-                ("Win Rate", f"{wr:.2f}%"),
-                ("Profit Factor", pf_text),
-                ("Final Value (USD)", f"{final_value:,.2f}"),
-                ("Total PnL (USD)", f"{total_pnl:+,.2f}"),
-            ]
-            if self.p.live_trading and display_entries_filled is not None:
-                summary_rows.extend([
-                    ("Live Entries Filled", f"{display_entries_filled}"),
-                    ("Live Open Trades", f"{display_open_trades}"),
-                ])
-                if live_bridge_stats is not None:
-                    summary_rows.append(("Commissions (USD)", f"{live_commissions:+,.2f}"))
-            self._print_aligned_rows(summary_rows)
-
-        if self.p.live_trading and isinstance(live_snapshot, dict):
-            self._print_daily_snapshot_activity(live_snapshot)
-
-
-        # Include broker position details if connection is available
-        self._print_broker_positions(snapshot=broker_snapshot)
-
-        print(f"\n=== ENTRY SIGNAL DEBUG STATS ===")
-        print(f"Total Entry Signals Evaluated: {self.entry_signal_count}")
-        print(f"Blocked Entries: {self.blocked_entry_count}")
-        print(f"Successful Entries: {self.successful_entry_count}")
-        if self.entry_signal_count > 0:
-            block_rate = (self.blocked_entry_count / self.entry_signal_count) * 100
-            success_rate = (self.successful_entry_count / self.entry_signal_count) * 100
-            print(f"Block Rate: {block_rate:.1f}% | Success Rate: {success_rate:.1f}%")
-
         calculated_pnl = (
             live_net_pnl if (self.p.live_trading and live_net_pnl is not None)
             else (display_gross_profit - display_gross_loss)
         )
         pnl_diff = abs(calculated_pnl - total_pnl)
-        if pnl_diff > 10.0:
-            print(f"INFO: PnL difference: {pnl_diff:.2f} (calculated: {calculated_pnl:+.2f})")
+
+        if self.p.print_summary:
+            print("=== ITRADING SUMMARY ===")
+
+            if self.p.live_trading and live_snapshot is not None:
+                day_trades_closed = int(day_metrics.get('trades_closed', 0))
+                day_entries_filled = int(day_metrics.get('entries_filled', display_entries_filled or 0))
+                day_wins = int(day_metrics.get('wins', 0))
+                day_losses = int(day_metrics.get('losses', 0))
+                day_win_rate = float(day_metrics.get('win_rate', 0.0) or 0.0)
+                day_pf = float(day_metrics.get('profit_factor', float('inf')) or float('inf'))
+                day_commissions = float(day_metrics.get('commissions_usd', 0.0) or 0.0)
+                ltd_trades_closed = int(ltd_metrics.get('trades_closed', display_trades))
+                ltd_entries_filled = int(ltd_metrics.get('entries_filled', display_entries_filled or display_trades))
+                ltd_wins = int(ltd_metrics.get('wins', display_wins))
+                ltd_losses = int(ltd_metrics.get('losses', display_losses))
+                ltd_win_rate = float(ltd_metrics.get('win_rate', wr) or 0.0)
+                ltd_pf = float(ltd_metrics.get('profit_factor', pf) or 0.0)
+                ltd_commissions = float(ltd_metrics.get('commissions_usd', live_commissions) or 0.0)
+                ltd_open_trades = int(ltd_metrics.get('open_trades', display_open_trades or 0))
+                day_open_trades = int(day_metrics.get('open_trades', display_open_trades or 0))
+
+                def _pf_text(value):
+                    return f"{value:.2f}" if math.isfinite(value) else "inf"
+
+                self._print_day_ltd_rows([
+                    ("Trades (Closed)", f"{day_trades_closed}", f"{ltd_trades_closed}"),
+                    ("Entries Filled", f"{day_entries_filled}", f"{ltd_entries_filled}"),
+                    ("Wins", f"{day_wins}", f"{ltd_wins}"),
+                    ("Losses", f"{day_losses}", f"{ltd_losses}"),
+                    ("Win Rate", f"{day_win_rate:.2f}%", f"{ltd_win_rate:.2f}%"),
+                    ("Profit Factor", _pf_text(day_pf), _pf_text(ltd_pf)),
+                    ("Commissions (USD)", f"{day_commissions:+,.2f}", f"{ltd_commissions:+,.2f}"),
+                    ("Open Trades", f"{day_open_trades}", f"{ltd_open_trades}"),
+                    ("Start Value (USD)", f"{day_start_value:,.2f}", f"{starting_cash:,.2f}"),
+                    ("Current Final Value (USD)", f"{current_final_value:,.2f}", f"{current_final_value:,.2f}"),
+                    ("Total PnL (USD)", f"{current_total_pnl_day:+,.2f}", f"{current_total_pnl_ltd:+,.2f}"),
+                ])
+            else:
+                summary_rows = [
+                    ("Trades (Closed/Entries)", f"{display_trades}"),
+                    ("Wins", f"{display_wins}"),
+                    ("Losses", f"{display_losses}"),
+                    ("Win Rate", f"{wr:.2f}%"),
+                    ("Profit Factor", pf_text),
+                    ("Final Value (USD)", f"{final_value:,.2f}"),
+                    ("Total PnL (USD)", f"{total_pnl:+,.2f}"),
+                ]
+                if self.p.live_trading and display_entries_filled is not None:
+                    summary_rows.extend([
+                        ("Live Entries Filled", f"{display_entries_filled}"),
+                        ("Live Open Trades", f"{display_open_trades}"),
+                    ])
+                    if live_bridge_stats is not None:
+                        summary_rows.append(("Commissions (USD)", f"{live_commissions:+,.2f}"))
+                self._print_aligned_rows(summary_rows)
+
+            if self.p.live_trading and isinstance(live_snapshot, dict):
+                self._print_daily_snapshot_activity(live_snapshot)
+
+            # Include broker position details if connection is available
+            self._print_broker_positions(snapshot=broker_snapshot)
+
+            print(f"\n=== ENTRY SIGNAL DEBUG STATS ===")
+            print(f"Total Entry Signals Evaluated: {self.entry_signal_count}")
+            print(f"Blocked Entries: {self.blocked_entry_count}")
+            print(f"Successful Entries: {self.successful_entry_count}")
+            if self.entry_signal_count > 0:
+                block_rate = (self.blocked_entry_count / self.entry_signal_count) * 100
+                success_rate = (self.successful_entry_count / self.entry_signal_count) * 100
+                print(f"Block Rate: {block_rate:.1f}% | Success Rate: {success_rate:.1f}%")
+
+            if pnl_diff > 10.0:
+                print(f"INFO: PnL difference: {pnl_diff:.2f} (calculated: {calculated_pnl:+.2f})")
 
         if self.p.long_use_pullback_entry or self.p.short_use_pullback_entry:
             self._reset_pullback_state()

@@ -4,8 +4,10 @@
   "IB_CLIENT_ID": 11,
   "FOREX_INSTRUMENT": "AUDUSD",
   "BAR_SIZE": "5 mins",
+  "IB_PARENT_TIF": "DAY",
+  "IB_BRACKET_EXIT_TIF": "DAY",
   "HIST_DURATION": "3 D",
-  "STARTING_CASH": 10000.0,
+  "STARTING_CASH": 5000.0,
   "ALLOW_MULTIPLE_POSITIONS_PER_SYMBOL": false,
   "PRICE_PRECISION": 5,
   "STRATEGY_MODULE": "itrading.src.strategy",
@@ -42,12 +44,11 @@
     "entry_end_minute": 0,
     "enable_risk_sizing": true,
     "risk_percent": 0.01,
-    "max_position_size_fraction": 0.40,
+    "max_position_size_fraction": 1.0,
     "long_atr_sl_multiplier": 4.4,
     "long_atr_tp_multiplier": 6.8,
     "short_atr_sl_multiplier": 2.5,
     "short_atr_tp_multiplier": 6.5,
-
     "long_use_ema_order_condition": false,
     "long_use_price_filter_ema": true,
     "long_use_candle_direction_filter": false,
@@ -57,7 +58,6 @@
     "long_min_angle": -5.0,
     "long_max_angle": 30.0,
     "long_angle_scale_factor": 10.0,
-
     "short_use_ema_order_condition": false,
     "short_use_price_filter_ema": true,
     "short_use_candle_direction_filter": false,
@@ -67,27 +67,24 @@
     "short_min_angle": -90.0,
     "short_max_angle": -20.0,
     "short_angle_scale_factor": 10.0,
-
     "long_use_atr_filter": true,
     "long_atr_min_threshold": 0.00015,
     "long_atr_max_threshold": 0.00075,
     "long_use_atr_increment_filter": false,
-    "long_atr_increment_min_threshold": 0.000001,
+    "long_atr_increment_min_threshold": 1e-06,
     "long_atr_increment_max_threshold": 0.0111,
     "long_use_atr_decrement_filter": false,
     "long_atr_decrement_min_threshold": -0.004,
     "long_atr_decrement_max_threshold": 0,
-
     "short_use_atr_filter": true,
     "short_atr_min_threshold": 0.0004,
     "short_atr_max_threshold": 0.00075,
     "short_use_atr_increment_filter": true,
-    "short_atr_increment_min_threshold": 0.000001,
+    "short_atr_increment_min_threshold": 1e-06,
     "short_atr_increment_max_threshold": 0.001,
     "short_use_atr_decrement_filter": true,
-    "short_atr_decrement_min_threshold": -0.00008,
-    "short_atr_decrement_max_threshold": -0.00002,
-
+    "short_atr_decrement_min_threshold": -8e-05,
+    "short_atr_decrement_max_threshold": -2e-05,
     "instrument_name": "AUDUSD",
     "use_forex_position_calc": true,
     "contract_size": 100000,
@@ -104,6 +101,6 @@
     "verbose_debug": true,
     "print_signals": true,
     "export_trade_reports": true,
-    "lifecycle_logging": true
+    "lifecycle_logging": false
   }
 }

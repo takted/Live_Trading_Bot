@@ -26,6 +26,7 @@ from itrading.src.strategy import ITradingStrategyAUDUSD as DefaultITradingStrat
 _SNAPSHOT_5_MINUTES_DIR = Path(__file__).resolve().parent.parent / "config"
 _SNAPSHOT_5_MINUTES_FILE_TEMPLATE = "snapshot_{instrument}.json"
 _LEGACY_BRIDGE_STATE_FILE_TEMPLATE = "bridge_state_{instrument}.json"
+_SNAPSHOT_LOGIC_ENABLED_DEFAULT = False
 
 
 def _snapshot_5_minutes_path(instrument: str) -> Path:
@@ -37,18 +38,30 @@ def _legacy_bridge_state_path(instrument: str) -> Path:
     name = _LEGACY_BRIDGE_STATE_FILE_TEMPLATE.format(instrument=str(instrument or "UNKNOWN").upper())
     return _SNAPSHOT_5_MINUTES_DIR / name
 
+
+def _is_snapshot_logic_enabled(params: Optional[dict] = None) -> bool:
+    """Runtime switch for snapshot file load/save behavior (disabled by default)."""
+    source = params or last_loaded_params
+    if source is None:
+        try:
+            source = load_params()
+        except Exception:
+            source = {}
+    return bool((source or {}).get('ENABLE_SNAPSHOT_LOGIC', _SNAPSHOT_LOGIC_ENABLED_DEFAULT))
+
 # --- Strategy Resolution Defaults ---
 DEFAULT_STRATEGY_MODULE = 'itrading.src.strategy'
 DEFAULT_FOREX_INSTRUMENT = 'AUDUSD'
 DEFAULT_STRATEGY_CLASS_NAME = 'ITradingStrategyAUDUSD'
 DEFAULT_IB_BRACKET_EXIT_TIF = 'GTC'
+DEFAULT_IB_PARENT_TIF = 'DAY'
 DEFAULT_PORTFOLIO_POLICY = {
     'enabled': False,
-    'total_capital_usd': 100000.0,
-    'default_instrument_allocation_usd': 10000.0,
+    'total_capital_usd': 50000.0,
+    'default_instrument_allocation_usd': 5000.0,
     'risk_per_trade_percent': 0.01,
     'risk_per_trade_usd': None,
-    'default_max_simultaneous_positions_per_symbol': 2,
+    'default_max_simultaneous_positions_per_symbol': 1,
     'instrument_allocations_usd': {},
     'instrument_max_positions': {},
 }
@@ -431,7 +444,15 @@ def _normalize_live_params(params: dict) -> dict:
     if not normalized.get('PRICE_PRECISION') or (instrument_override and normalized.get('PRICE_PRECISION') == configured_default_precision):
         normalized['PRICE_PRECISION'] = target_default_precision
 
-    # Bracket exit orders (TP/SL) TIF is configurable for live IB execution.
+    # Parent and bracket exit order TIF are configurable for live IB execution.
+    raw_parent_tif = str(normalized.get('IB_PARENT_TIF', DEFAULT_IB_PARENT_TIF) or '').strip().upper()
+    if raw_parent_tif not in ('DAY', 'GTC'):
+        logger.warning(
+            f"Invalid IB_PARENT_TIF '{raw_parent_tif or '<empty>'}'. "
+            f"Falling back to {DEFAULT_IB_PARENT_TIF}.")
+        raw_parent_tif = DEFAULT_IB_PARENT_TIF
+    normalized['IB_PARENT_TIF'] = raw_parent_tif
+
     raw_exit_tif = str(normalized.get('IB_BRACKET_EXIT_TIF', DEFAULT_IB_BRACKET_EXIT_TIF) or '').strip().upper()
     if raw_exit_tif not in ('DAY', 'GTC'):
         logger.warning(
@@ -496,6 +517,9 @@ def _strategy_params_without_runtime_overrides(params: dict) -> dict:
 
 def _load_snapshot_document(instrument: str) -> dict:
     """Load the current per-instrument 5-minute snapshot document when available."""
+    if not _is_snapshot_logic_enabled():
+        return {}
+
     path = _snapshot_5_minutes_path(instrument)
     if not path.exists():
         return {}
@@ -519,6 +543,9 @@ def _save_snapshot_document(
 ):
     """Persist the enriched 5-minute snapshot document for the active instrument."""
     global last_strategy_broker_snapshot, last_strategy_instrument_nlv
+
+    if not _is_snapshot_logic_enabled(params):
+        return
 
     if live_lifecycle_bridge is None:
         return
@@ -567,6 +594,9 @@ def _build_runtime_snapshot_document(
     open_orders: Optional[list[dict]] = None,
 ) -> dict:
     """Build the current in-memory snapshot document without writing it to disk."""
+    if not _is_snapshot_logic_enabled(params):
+        return {}
+
     if live_lifecycle_bridge is None:
         return {}
 
@@ -679,6 +709,9 @@ def _save_snapshot_5_minutes(
     log_sections: bool = False,
 ):
     """Persist the active 5-minute snapshot document to disk."""
+    if not _is_snapshot_logic_enabled(params):
+        return
+
     _save_snapshot_document(
         params=params,
         last_processed_bar_dt=last_processed_bar_dt,
@@ -1018,7 +1051,7 @@ def _log_open_orders_snapshot(forex_pair: str):
 def _count_open_order_slots_for_forex_pair(forex_pair: str) -> int:
     """Count occupied trade slots from active open exit orders for one FX pair.
 
-    Rule: one active GTC exit bracket (LMT/STP pair linked by parentId) counts as one slot.
+    Rule: one active DAY/GTC exit bracket (LMT/STP pair linked by parentId) counts as one slot.
     If a linked pair is temporarily incomplete, it still counts as one occupied slot.
     """
     snapshots = _get_open_orders_for_instrument(forex_pair)
@@ -1027,7 +1060,7 @@ def _count_open_order_slots_for_forex_pair(forex_pair: str) -> int:
 
     eligible = [
         item for item in snapshots
-        if item.get('tif') == 'GTC'
+        if item.get('tif') in {'DAY', 'GTC'}
         and item.get('order_type') in {'LMT', 'STP'}
         and _safe_float(item.get('remaining', 0.0), 0.0) > 0
     ]
@@ -1257,12 +1290,16 @@ async def execute_live_trade(contract, signal, params):
         exit_tif = str(params.get('IB_BRACKET_EXIT_TIF', DEFAULT_IB_BRACKET_EXIT_TIF)).strip().upper() or DEFAULT_IB_BRACKET_EXIT_TIF
         if exit_tif not in ('DAY', 'GTC'):
             exit_tif = DEFAULT_IB_BRACKET_EXIT_TIF
+        parent_tif = str(params.get('IB_PARENT_TIF', DEFAULT_IB_PARENT_TIF)).strip().upper() or DEFAULT_IB_PARENT_TIF
+        if parent_tif not in ('DAY', 'GTC'):
+            parent_tif = DEFAULT_IB_PARENT_TIF
 
         parent_order = Order(
             orderId=parent_order_id,
             action=action,
             orderType="MKT",
             totalQuantity=quantity,
+            tif=parent_tif,
             transmit=False
         )
         take_profit_order = Order(
@@ -1304,14 +1341,14 @@ async def execute_live_trade(contract, signal, params):
                 stop_loss_order_id=stop_loss_order.orderId,
                 action=action,
                 quantity=quantity,
-                tif=exit_tif,
+                tif=parent_tif,
                 take_profit_price=take_profit_price,
                 stop_loss_price=stop_loss_price,
             )
 
         logger.info(
             f"Placing bracket order: {action} {quantity} {contract.symbol} "
-            f"SL: {stop_loss_price} TP: {take_profit_price} EXIT_TIF: {exit_tif}")
+            f"SL: {stop_loss_price} TP: {take_profit_price} PARENT_TIF: {parent_tif} EXIT_TIF: {exit_tif}")
         ib.placeOrder(contract, parent_order)
         ib.placeOrder(contract, take_profit_order)
         ib.placeOrder(contract, stop_loss_order)
@@ -1626,25 +1663,31 @@ async def run_bot():
     pip_value = strategy_params.get('forex_pip_value', 0.0001)
 
     # -----------------------------------------------------------------
-    # 1. Try to restore snapshot / live bridge runtime from disk.
+    # 1. Initialize live bridge state.
+    #    Snapshot file restore is optional and currently disabled by default.
     # -----------------------------------------------------------------
-    snapshot_path = _snapshot_5_minutes_path(instrument)
-    legacy_state_path = _legacy_bridge_state_path(instrument)
-    if snapshot_path.exists():
-        live_lifecycle_bridge = LiveLifecycleBridge.load_from_file(snapshot_path, logger)
-    elif legacy_state_path.exists():
-        logger.info(f"Migrating legacy bridge state from {legacy_state_path} into snapshot format for {instrument}.")
-        live_lifecycle_bridge = LiveLifecycleBridge.load_from_file(legacy_state_path, logger)
+    snapshot_enabled = _is_snapshot_logic_enabled(params)
+    if snapshot_enabled:
+        snapshot_path = _snapshot_5_minutes_path(instrument)
+        legacy_state_path = _legacy_bridge_state_path(instrument)
+        if snapshot_path.exists():
+            live_lifecycle_bridge = LiveLifecycleBridge.load_from_file(snapshot_path, logger)
+        elif legacy_state_path.exists():
+            logger.info(f"Migrating legacy bridge state from {legacy_state_path} into snapshot format for {instrument}.")
+            live_lifecycle_bridge = LiveLifecycleBridge.load_from_file(legacy_state_path, logger)
+        else:
+            live_lifecycle_bridge = LiveLifecycleBridge(logger=logger, pip_value=float(pip_value))
+
+        restored_snapshot = _load_snapshot_document(instrument)
+        restored_state = restored_snapshot.get('strategy_state') if isinstance(restored_snapshot, dict) else None
+        if isinstance(restored_state, dict) and restored_state:
+            live_strategy_state = restored_state
     else:
+        logger.info(f"[{instrument}] Snapshot logic disabled (ENABLE_SNAPSHOT_LOGIC=false). Using in-memory lifecycle bridge only.")
         live_lifecycle_bridge = LiveLifecycleBridge(logger=logger, pip_value=float(pip_value))
 
     # Update pip_value from current config in case it changed.
     live_lifecycle_bridge.pip_value = float(pip_value)
-
-    restored_snapshot = _load_snapshot_document(instrument)
-    restored_state = restored_snapshot.get('strategy_state') if isinstance(restored_snapshot, dict) else None
-    if isinstance(restored_state, dict) and restored_state:
-        live_strategy_state = restored_state
 
     await ib.connectAsync(params['IB_HOST'], params['IB_PORT'], clientId=params['IB_CLIENT_ID'])
     logger.info("✅ Connected to Interactive Brokers")

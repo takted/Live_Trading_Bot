@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,13 +28,15 @@ from ibapi.wrapper import EWrapper
 
 
 # Common informational codes that do not require a hard failure.
-_INFO_ERROR_CODES = {2103, 2104, 2105, 2106, 2107, 2108, 2158}
+_INFO_ERROR_CODES = {2100, 2101, 2103, 2104, 2105, 2106, 2107, 2108, 2158}
 _FATAL_CONNECTION_CODES = {502, 504, 1100, 1300}
 _IB_UNSET_DOUBLE = 1.7976931348623157e308
 _DEFAULT_ACCOUNT_SUMMARY_TAGS = (
     "AccountType,NetLiquidation,TotalCashValue,BuyingPower,EquityWithLoanValue,"
-    "GrossPositionValue,AvailableFunds,ExcessLiquidity,Cushion,Leverage"
+    "GrossPositionValue,AvailableFunds,ExcessLiquidity,Cushion,Leverage,"
+    "CashBalance,NetLiquidationByCurrency,Currency,BaseCurrency,ExchangeRate"
 )
+_REQUIRED_CURRENCY_CASH_TAGS = ("CashBalance", "NetLiquidationByCurrency")
 
 
 @dataclass
@@ -41,7 +44,9 @@ class RequestContext:
     open_orders_done: threading.Event = field(default_factory=threading.Event)
     completed_orders_done: threading.Event = field(default_factory=threading.Event)
     executions_done: threading.Event = field(default_factory=threading.Event)
+    managed_accounts_done: threading.Event = field(default_factory=threading.Event)
     account_summary_done: threading.Event = field(default_factory=threading.Event)
+    account_updates_done: threading.Event = field(default_factory=threading.Event)
     positions_done: threading.Event = field(default_factory=threading.Event)
     pnl_done: threading.Event = field(default_factory=threading.Event)
     pnl_single_done: threading.Event = field(default_factory=threading.Event)
@@ -65,6 +70,7 @@ class IBKROrderManagementApp(EWrapper, EClient):
         self.executions: list[dict[str, Any]] = []
         self.commissions_by_exec_id: dict[str, dict[str, Any]] = {}
         self.account_summary_rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.account_update_rows: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.positions_rows: list[dict[str, Any]] = []
         self.account_pnl_rows: dict[int, dict[str, Any]] = {}
         self.position_pnl_rows: dict[int, dict[str, Any]] = {}
@@ -73,6 +79,7 @@ class IBKROrderManagementApp(EWrapper, EClient):
         self.errors: list[dict[str, Any]] = []
         self.request_errors_by_id: dict[int, dict[str, Any]] = {}
         self.pending_execution_req_ids: set[int] = set()
+        self.managed_accounts: list[str] = []
 
     # ------------------------------
     # Connection + error callbacks
@@ -84,6 +91,11 @@ class IBKROrderManagementApp(EWrapper, EClient):
 
     def connectAck(self) -> None:  # noqa: N802
         self.server_version = self.serverVersion()
+
+    def managedAccounts(self, accountsList: str) -> None:  # noqa: N802
+        parsed_accounts = [acct.strip() for acct in str(accountsList or "").split(",") if acct.strip()]
+        self.managed_accounts = parsed_accounts
+        self.requests.managed_accounts_done.set()
 
     def connectionClosed(self) -> None:  # noqa: N802
         print("[IBKR] Connection closed.")
@@ -321,17 +333,37 @@ class IBKROrderManagementApp(EWrapper, EClient):
 
     def accountSummary(self, reqId: int, account: str, tag: str, value: str, currency: str) -> None:  # noqa: N802
         _ = reqId
-        key = (str(account or ""), str(tag or ""), str(currency or ""))
+        normalized_account = str(account or "").strip()
+        normalized_tag = str(tag or "").strip()
+        normalized_currency = str(currency or "").strip().upper()
+        key = (normalized_account, normalized_tag, normalized_currency)
         self.account_summary_rows[key] = {
             "account": key[0],
             "tag": key[1],
-            "value": str(value or ""),
+            "value": str(value or "").strip(),
             "currency": key[2],
         }
 
     def accountSummaryEnd(self, reqId: int) -> None:  # noqa: N802
         _ = reqId
         self.requests.account_summary_done.set()
+
+    def updateAccountValue(self, key: str, value: str, currency: str, accountName: str) -> None:  # noqa: N802
+        normalized_account = str(accountName or "").strip()
+        normalized_key = str(key or "").strip()
+        normalized_currency = str(currency or "").strip().upper()
+        row_key = (normalized_account, normalized_key, normalized_currency)
+        self.account_update_rows[row_key] = {
+            "account": normalized_account,
+            "tag": normalized_key,
+            "value": str(value or "").strip(),
+            "currency": normalized_currency,
+            "source": "updateAccountValue",
+        }
+
+    def accountDownloadEnd(self, accountName: str) -> None:  # noqa: N802
+        _ = accountName
+        self.requests.account_updates_done.set()
 
     def position(self, account: str, contract: Contract, position: Any, avgCost: float) -> None:  # noqa: N802
         self.positions_rows.append(
@@ -475,6 +507,12 @@ class IBKROrderManagementApp(EWrapper, EClient):
         self.reqAllOpenOrders()
         self._wait_or_raise(self.requests.open_orders_done, "all open orders", timeout_seconds)
 
+    def request_managed_accounts(self, timeout_seconds: float) -> None:
+        self.requests.managed_accounts_done.clear()
+        self.managed_accounts = []
+        self.reqManagedAccts()
+        self._wait_or_raise(self.requests.managed_accounts_done, "managed accounts", timeout_seconds)
+
     def request_completed_orders(self, timeout_seconds: float, api_only: bool) -> None:
         self.requests.completed_orders_done.clear()
         self.reqCompletedOrders(api_only)
@@ -515,6 +553,19 @@ class IBKROrderManagementApp(EWrapper, EClient):
             # Ensure streaming account summary request is cleaned up.
             self.cancelAccountSummary(req_id)
 
+    def request_account_updates(self, account: str, timeout_seconds: float) -> None:
+        account_code = str(account or "").strip()
+        if not account_code:
+            return
+
+        self.requests.account_updates_done.clear()
+        self.account_update_rows.clear()
+        self.reqAccountUpdates(True, account_code)
+        try:
+            self._wait_or_raise(self.requests.account_updates_done, f"account updates for {account_code}", timeout_seconds)
+        finally:
+            self.reqAccountUpdates(False, account_code)
+
     def request_positions(self, timeout_seconds: float) -> None:
         self.requests.positions_done.clear()
         self.positions_rows.clear()
@@ -550,6 +601,7 @@ class IBKROrderManagementApp(EWrapper, EClient):
 
         candidates: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
+        skipped_flat_positions = 0
         for row in self.positions_rows:
             con_id = int(row.get("conId") or 0)
             row_account = str(row.get("account") or "")
@@ -557,11 +609,21 @@ class IBKROrderManagementApp(EWrapper, EClient):
                 continue
             if account and row_account and row_account != account:
                 continue
+
+            # IBKR rejects reqPnLSingle for flat positions with code 2150.
+            position_value = _to_float(row.get("position"))
+            if position_value is None or abs(position_value) < 1e-12:
+                skipped_flat_positions += 1
+                continue
+
             key = (row_account, con_id)
             if key in seen:
                 continue
             seen.add(key)
             candidates.append(row)
+
+        if skipped_flat_positions:
+            print(f"[IBKR][info] Skipped reqPnLSingle for {skipped_flat_positions} flat position(s).")
 
         for index, row in enumerate(candidates[:max_positions]):
             req_id = start_req_id + index
@@ -627,6 +689,29 @@ def _get_all_account_summary_tags() -> str:
     return _DEFAULT_ACCOUNT_SUMMARY_TAGS
 
 
+def _merge_account_summary_tags(tags: str, required_tags: Iterable[str] = _REQUIRED_CURRENCY_CASH_TAGS) -> str:
+    """Normalize CSV account summary tags and ensure required tags are present once."""
+    output: list[str] = []
+    seen: set[str] = set()
+
+    def _add_tag(raw_tag: Any) -> None:
+        tag_text = str(raw_tag or "").strip()
+        if not tag_text:
+            return
+        folded = tag_text.casefold()
+        if folded in seen:
+            return
+        seen.add(folded)
+        output.append(tag_text)
+
+    for token in str(tags or "").split(","):
+        _add_tag(token)
+    for tag in required_tags:
+        _add_tag(tag)
+
+    return ",".join(output)
+
+
 def _clean_value(value: Any) -> str:
     if value is None:
         return ""
@@ -637,7 +722,12 @@ def _clean_value(value: Any) -> str:
     return str(value)
 
 
-def _format_table(title: str, rows: Iterable[dict[str, Any]], columns: list[tuple[str, str]]) -> str:
+def _format_table(
+    title: str,
+    rows: Iterable[dict[str, Any]],
+    columns: list[tuple[str, str]],
+    summary_row: dict[str, Any] | None = None,
+) -> str:
     rows_list = list(rows)
     if not rows_list:
         return f"\n{title}\n(no rows)\n"
@@ -645,7 +735,8 @@ def _format_table(title: str, rows: Iterable[dict[str, Any]], columns: list[tupl
     widths: dict[str, int] = {}
     for header, key in columns:
         max_row = max((len(_clean_value(row.get(key, ""))) for row in rows_list), default=0)
-        widths[key] = max(len(header), max_row)
+        summary_len = len(_clean_value(summary_row.get(key, ""))) if isinstance(summary_row, dict) else 0
+        widths[key] = max(len(header), max_row, summary_len)
 
     header_line = " | ".join(header.ljust(widths[key]) for header, key in columns)
     sep_line = "-+-".join("-" * widths[key] for _, key in columns)
@@ -654,7 +745,13 @@ def _format_table(title: str, rows: Iterable[dict[str, Any]], columns: list[tupl
     for row in rows_list:
         data_lines.append(" | ".join(_clean_value(row.get(key, "")).ljust(widths[key]) for _, key in columns))
 
-    return "\n".join([f"\n{title}", header_line, sep_line, *data_lines, ""])
+    table_lines = [f"\n{title}", header_line, sep_line, *data_lines]
+    if isinstance(summary_row, dict):
+        table_lines.append(sep_line)
+        table_lines.append(" | ".join(_clean_value(summary_row.get(key, "")).ljust(widths[key]) for _, key in columns))
+    table_lines.append("")
+
+    return "\n".join(table_lines)
 
 
 def _to_float(value: Any) -> float | None:
@@ -665,6 +762,18 @@ def _to_float(value: Any) -> float | None:
     if not math.isfinite(parsed):
         return None
     return parsed
+
+
+def _sum_column(rows: Iterable[dict[str, Any]], key: str) -> float | None:
+    total = 0.0
+    has_value = False
+    for row in rows:
+        value = _to_float(row.get(key))
+        if value is None:
+            continue
+        total += value
+        has_value = True
+    return total if has_value else None
 
 
 def _sanitize_ib_double(value: Any) -> float | None:
@@ -719,6 +828,69 @@ def _normalize_fin_instrument_key(value: Any) -> str:
 
 def _is_missing_order_id(value: Any) -> bool:
     return value in (None, "", 0, "0")
+
+
+def _is_missing_quantity(value: Any) -> bool:
+    parsed = _to_float(value)
+    return parsed is None or abs(parsed) < 1e-12
+
+
+def _parse_filled_size_from_completed_status(value: Any) -> float | None:
+    text = str(value or "")
+    if not text:
+        return None
+
+    match = re.search(r"Filled\s+Size\s*:\s*([0-9]+(?:\.[0-9]+)?)", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+
+    return _to_float(match.group(1))
+
+
+def _resolve_completed_order_quantity(
+    row: dict[str, Any],
+    executions_by_perm_id: dict[int, list[dict[str, Any]]],
+    executions_by_order_id: dict[int, list[dict[str, Any]]],
+    open_orders_by_perm_id: dict[int, dict[str, Any]],
+) -> tuple[Any, str]:
+    current_quantity = row.get("totalQuantity")
+    if not _is_missing_quantity(current_quantity):
+        return current_quantity, "completedOrder"
+
+    perm_id = int(row.get("permId") or 0)
+    order_id = int(row.get("orderId") or 0)
+
+    execution_rows = executions_by_perm_id.get(perm_id, []) if perm_id else []
+    if not execution_rows and order_id:
+        execution_rows = executions_by_order_id.get(order_id, [])
+
+    if execution_rows:
+        cum_qty_values: list[float] = []
+        for item in execution_rows:
+            qty = _to_float(item.get("cumQty"))
+            if qty is not None and qty > 0:
+                cum_qty_values.append(qty)
+        if cum_qty_values:
+            return max(cum_qty_values), "execDetails.cumQty"
+
+        shares_values: list[float] = []
+        for item in execution_rows:
+            qty = _to_float(item.get("shares"))
+            if qty is not None and qty > 0:
+                shares_values.append(qty)
+        if shares_values:
+            return max(shares_values), "execDetails.shares"
+
+    if perm_id:
+        open_order = open_orders_by_perm_id.get(perm_id)
+        if open_order and not _is_missing_quantity(open_order.get("totalQuantity")):
+            return open_order.get("totalQuantity"), "openOrder.totalQuantity"
+
+    parsed_status_quantity = _parse_filled_size_from_completed_status(row.get("completedStatus"))
+    if parsed_status_quantity is not None:
+        return parsed_status_quantity, "completedStatus"
+
+    return current_quantity, "completedOrder"
 
 
 def _apply_fin_instrument_filter(rows: list[dict[str, Any]], fin_instrument_filter: str) -> list[dict[str, Any]]:
@@ -825,11 +997,16 @@ def _build_open_orders_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]
 def _build_completed_orders_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
-    executions_by_perm_id = {
-        int(execution.get("permId") or 0): execution
-        for execution in app.executions
-        if int(execution.get("permId") or 0)
-    }
+    executions_by_perm_id: dict[int, list[dict[str, Any]]] = {}
+    executions_by_order_id: dict[int, list[dict[str, Any]]] = {}
+    for execution in app.executions:
+        execution_perm_id = int(execution.get("permId") or 0)
+        execution_order_id = int(execution.get("orderId") or 0)
+        if execution_perm_id:
+            executions_by_perm_id.setdefault(execution_perm_id, []).append(execution)
+        if execution_order_id:
+            executions_by_order_id.setdefault(execution_order_id, []).append(execution)
+
     open_orders_by_perm_id = {
         int(row.get("permId") or 0): row
         for row in app.open_orders.values()
@@ -839,9 +1016,11 @@ def _build_completed_orders_rows(app: IBKROrderManagementApp) -> list[dict[str, 
     for original_row in app.completed_orders:
         row = dict(original_row)
         perm_id = int(row.get("permId") or 0)
+        order_id = int(row.get("orderId") or 0)
 
         if _is_missing_order_id(row.get("orderId")) and perm_id:
-            execution = executions_by_perm_id.get(perm_id)
+            execution_rows = executions_by_perm_id.get(perm_id, [])
+            execution = execution_rows[0] if execution_rows else None
             open_order = open_orders_by_perm_id.get(perm_id)
 
             if execution and not _is_missing_order_id(execution.get("orderId")):
@@ -862,6 +1041,18 @@ def _build_completed_orders_rows(app: IBKROrderManagementApp) -> list[dict[str, 
                     row["parentId"] = open_order.get("parentId")
                 if row.get("parentPermId") in (None, "") and open_order.get("parentPermId") not in (None, ""):
                     row["parentPermId"] = open_order.get("parentPermId")
+
+        if not order_id:
+            order_id = int(row.get("orderId") or 0)
+
+        resolved_quantity, resolved_quantity_source = _resolve_completed_order_quantity(
+            row=row,
+            executions_by_perm_id=executions_by_perm_id,
+            executions_by_order_id=executions_by_order_id,
+            open_orders_by_perm_id=open_orders_by_perm_id,
+        )
+        row["totalQuantity"] = resolved_quantity
+        row["totalQuantitySource"] = resolved_quantity_source
 
         rows.append(row)
 
@@ -906,10 +1097,478 @@ def _build_execution_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
     return output
 
 
+def _normalize_status(value: Any) -> str:
+    return str(value or "").strip().lower().replace(" ", "")
+
+
+def _is_completed_parent_filled(row: dict[str, Any]) -> bool:
+    parent_id = int(row.get("parentId") or 0)
+    parent_perm_id = int(row.get("parentPermId") or 0)
+    if parent_id != 0 or parent_perm_id != 0:
+        return False
+
+    status_text = str(row.get("status") or "").strip().lower()
+    completed_status_text = str(row.get("completedStatus") or "").strip().lower()
+    return "filled" in status_text or "filled" in completed_status_text
+
+
+def _is_completed_child_filled(row: dict[str, Any]) -> bool:
+    parent_id = int(row.get("parentId") or 0)
+    parent_perm_id = int(row.get("parentPermId") or 0)
+    if parent_id == 0 and parent_perm_id == 0:
+        return False
+
+    status_text = str(row.get("status") or "").strip().lower()
+    completed_status_text = str(row.get("completedStatus") or "").strip().lower()
+    return "filled" in status_text or "filled" in completed_status_text
+
+
+def _extract_parent_direction(row: dict[str, Any]) -> int:
+    action = str(row.get("action") or "").strip().upper()
+    if action in {"BUY", "BOT"}:
+        return 1
+    if action in {"SELL", "SLD"}:
+        return -1
+    return 0
+
+
+def _extract_execution_commission_quote(execution_row: dict[str, Any]) -> float:
+    """Return execution commission in quote/base-PnL currency when available.
+
+    Prefer `commQuote` (already normalized for FX by `_build_execution_report_rows`),
+    then fallback to raw `commission`.
+    """
+    comm_quote = _to_float(execution_row.get("commQuote"))
+    if comm_quote is not None:
+        return abs(comm_quote)
+    raw_commission = _to_float(execution_row.get("commission"))
+    if raw_commission is not None:
+        return abs(raw_commission)
+    return 0.0
+
+
+def _summarize_order_fills(
+    order_row: dict[str, Any],
+    execution_by_perm: dict[int, list[dict[str, Any]]],
+    execution_by_order: dict[int, list[dict[str, Any]]],
+) -> tuple[float | None, float | None, float]:
+    perm_id = int(order_row.get("permId") or 0)
+    order_id = int(order_row.get("orderId") or 0)
+
+    fill_rows = execution_by_perm.get(perm_id, []) if perm_id else []
+    if not fill_rows and order_id:
+        fill_rows = execution_by_order.get(order_id, [])
+
+    if fill_rows:
+        qty_total = 0.0
+        notional_total = 0.0
+        commission_total = 0.0
+        for fill in fill_rows:
+            qty = _to_float(fill.get("shares"))
+            px = _to_float(fill.get("price"))
+            if qty is None or qty <= 0 or px is None:
+                continue
+            qty_total += qty
+            notional_total += qty * px
+            commission_total += _extract_execution_commission_quote(fill)
+
+        if qty_total > 0:
+            return qty_total, notional_total / qty_total, commission_total
+
+    fallback_qty = _to_float(order_row.get("totalQuantity"))
+    if fallback_qty is None or fallback_qty <= 0:
+        return None, None, 0.0
+
+    fallback_price = _to_float(order_row.get("lmtPrice"))
+    if fallback_price is None:
+        fallback_price = _to_float(order_row.get("auxPrice"))
+
+    return fallback_qty, fallback_price, 0.0
+
+
+def _build_targeted_released_pnl_rows(
+    completed_rows: list[dict[str, Any]],
+    open_rows: list[dict[str, Any]],
+    execution_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    execution_by_perm: dict[int, list[dict[str, Any]]] = {}
+    execution_by_order: dict[int, list[dict[str, Any]]] = {}
+    for execution in execution_rows:
+        perm_id = int(execution.get("permId") or 0)
+        order_id = int(execution.get("orderId") or 0)
+        if perm_id:
+            execution_by_perm.setdefault(perm_id, []).append(execution)
+        if order_id:
+            execution_by_order.setdefault(order_id, []).append(execution)
+
+    output: list[dict[str, Any]] = []
+    for parent in completed_rows:
+        if not _is_completed_parent_filled(parent):
+            continue
+
+        parent_order_id = int(parent.get("orderId") or 0)
+        parent_perm_id = int(parent.get("permId") or 0)
+        parent_qty = _to_float(parent.get("totalQuantity"))
+        if parent_qty is None or parent_qty <= 0:
+            continue
+
+        direction = _extract_parent_direction(parent)
+        if direction == 0:
+            continue
+
+        parent_execs = execution_by_perm.get(parent_perm_id, []) if parent_perm_id else []
+        if not parent_execs and parent_order_id:
+            parent_execs = execution_by_order.get(parent_order_id, [])
+
+        entry_price = None
+        entry_commission = 0.0
+        if parent_execs:
+            cum_sorted = sorted(
+                parent_execs,
+                key=lambda row: _to_float(row.get("cumQty")) or 0.0,
+                reverse=True,
+            )
+            entry_price = _to_float(cum_sorted[0].get("avgPrice")) or _to_float(cum_sorted[0].get("price"))
+            entry_commission = sum(_extract_execution_commission_quote(exec_row) for exec_row in parent_execs)
+        if entry_price is None:
+            continue
+
+        submitted_children: list[dict[str, Any]] = []
+        for child in open_rows:
+            status = _normalize_status(child.get("status"))
+            if status not in {"submitted", "presubmitted"}:
+                continue
+
+            child_parent_id = int(child.get("parentId") or 0)
+            child_parent_perm_id = int(child.get("parentPermId") or 0)
+            match_by_perm = parent_perm_id and child_parent_perm_id and child_parent_perm_id == parent_perm_id
+            match_by_order = parent_order_id and child_parent_id and child_parent_id == parent_order_id
+            if match_by_perm or match_by_order:
+                submitted_children.append(child)
+
+        if not submitted_children:
+            continue
+
+        lmt_children = [child for child in submitted_children if str(child.get("orderType") or "").strip().upper() == "LMT"]
+        stp_children = [child for child in submitted_children if str(child.get("orderType") or "").strip().upper().startswith("STP")]
+
+        lmt_child = max(lmt_children, key=lambda row: int(row.get("orderId") or 0)) if lmt_children else None
+        stp_child = max(stp_children, key=lambda row: int(row.get("orderId") or 0)) if stp_children else None
+
+        lmt_price = _to_float(lmt_child.get("lmtPrice")) if lmt_child else None
+        stp_price = (_to_float(stp_child.get("auxPrice")) if stp_child else None) or (
+            _to_float(stp_child.get("lmtPrice")) if stp_child else None
+        )
+
+        lmt_qty = _to_float(lmt_child.get("totalQuantity")) if lmt_child else None
+        stp_qty = _to_float(stp_child.get("totalQuantity")) if stp_child else None
+        lmt_qty_factor = (lmt_qty / parent_qty) if lmt_qty is not None and parent_qty > 0 else 1.0
+        stp_qty_factor = (stp_qty / parent_qty) if stp_qty is not None and parent_qty > 0 else 1.0
+        est_lmt_exit_commission = entry_commission * lmt_qty_factor if lmt_child else 0.0
+        est_stp_exit_commission = entry_commission * stp_qty_factor if stp_child else 0.0
+
+        pnl_at_lmt = (lmt_price - entry_price) * direction * parent_qty if lmt_price is not None else None
+        pnl_at_stp = (stp_price - entry_price) * direction * parent_qty if stp_price is not None else None
+
+        target_profit_gross = max(pnl_at_lmt, 0.0) if pnl_at_lmt is not None else None
+        target_loss_gross = max(-(pnl_at_stp or 0.0), 0.0) if pnl_at_stp is not None else None
+
+        target_profit_net = (
+            max((target_profit_gross or 0.0) - entry_commission - est_lmt_exit_commission, 0.0)
+            if target_profit_gross is not None
+            else None
+        )
+        target_loss_net = (
+            max((target_loss_gross or 0.0) + entry_commission + est_stp_exit_commission, 0.0)
+            if target_loss_gross is not None
+            else None
+        )
+
+        # Convert loss values to negative for proper P&L representation
+        target_loss_gross_display = -target_loss_gross if target_loss_gross is not None else None
+        target_loss_net_display = -target_loss_net if target_loss_net is not None else None
+
+        output.append(
+            {
+                "parentOrderId": parent_order_id,
+                "parentPermId": parent_perm_id,
+                "account": parent.get("account", ""),
+                "symbol": parent.get("symbol", ""),
+                "finInstrument": parent.get("finInstrument", ""),
+                "pnlCurrency": parent.get("currency", ""),
+                "side": "LONG" if direction > 0 else "SHORT",
+                "entryQty": parent_qty,
+                "entryPrice": entry_price,
+                "entryCommission": entry_commission,
+                "lmtOrderId": lmt_child.get("orderId", "") if lmt_child else "",
+                "lmtPrice": lmt_price,
+                "estExitCommLmt": est_lmt_exit_commission if lmt_child else None,
+                "targetProfitGross": target_profit_gross,
+                "targetProfit": target_profit_net,
+                "stpOrderId": stp_child.get("orderId", "") if stp_child else "",
+                "stpPrice": stp_price,
+                "estExitCommStp": est_stp_exit_commission if stp_child else None,
+                "targetLossGross": target_loss_gross_display,
+                "targetLoss": target_loss_net_display,
+            }
+        )
+
+    output.sort(key=lambda row: (str(row.get("account", "")), int(row.get("parentOrderId") or 0)))
+    return output
+
+
+def _build_actual_pnl_rows(
+    completed_rows: list[dict[str, Any]],
+    execution_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    execution_by_perm: dict[int, list[dict[str, Any]]] = {}
+    execution_by_order: dict[int, list[dict[str, Any]]] = {}
+    for execution in execution_rows:
+        perm_id = int(execution.get("permId") or 0)
+        order_id = int(execution.get("orderId") or 0)
+        if perm_id:
+            execution_by_perm.setdefault(perm_id, []).append(execution)
+        if order_id:
+            execution_by_order.setdefault(order_id, []).append(execution)
+
+    output: list[dict[str, Any]] = []
+    for parent in completed_rows:
+        if not _is_completed_parent_filled(parent):
+            continue
+
+        direction = _extract_parent_direction(parent)
+        if direction == 0:
+            continue
+
+        parent_order_id = int(parent.get("orderId") or 0)
+        parent_perm_id = int(parent.get("permId") or 0)
+        entry_qty, entry_price, entry_commission = _summarize_order_fills(
+            parent,
+            execution_by_perm=execution_by_perm,
+            execution_by_order=execution_by_order,
+        )
+        if entry_qty is None or entry_qty <= 0 or entry_price is None:
+            continue
+
+        child_candidates: list[dict[str, Any]] = []
+        for child in completed_rows:
+            if not _is_completed_child_filled(child):
+                continue
+            child_parent_id = int(child.get("parentId") or 0)
+            child_parent_perm_id = int(child.get("parentPermId") or 0)
+            if (parent_perm_id and child_parent_perm_id == parent_perm_id) or (parent_order_id and child_parent_id == parent_order_id):
+                child_candidates.append(child)
+
+        if not child_candidates:
+            continue
+
+        lmt_children = [child for child in child_candidates if str(child.get("orderType") or "").strip().upper() == "LMT"]
+        stp_children = [child for child in child_candidates if str(child.get("orderType") or "").strip().upper().startswith("STP")]
+
+        lmt_qty = 0.0
+        lmt_notional = 0.0
+        lmt_commission = 0.0
+        for child in lmt_children:
+            qty, price, commission = _summarize_order_fills(child, execution_by_perm=execution_by_perm, execution_by_order=execution_by_order)
+            if qty is None or qty <= 0 or price is None:
+                continue
+            lmt_qty += qty
+            lmt_notional += qty * price
+            lmt_commission += commission
+
+        stp_qty = 0.0
+        stp_notional = 0.0
+        stp_commission = 0.0
+        for child in stp_children:
+            qty, price, commission = _summarize_order_fills(child, execution_by_perm=execution_by_perm, execution_by_order=execution_by_order)
+            if qty is None or qty <= 0 or price is None:
+                continue
+            stp_qty += qty
+            stp_notional += qty * price
+            stp_commission += commission
+
+        lmt_avg_price = (lmt_notional / lmt_qty) if lmt_qty > 0 else None
+        stp_avg_price = (stp_notional / stp_qty) if stp_qty > 0 else None
+
+        lmt_gross = (lmt_avg_price - entry_price) * direction * lmt_qty if lmt_avg_price is not None else None
+        stp_gross_signed = (stp_avg_price - entry_price) * direction * stp_qty if stp_avg_price is not None else None
+        stp_gross_loss = max(-(stp_gross_signed or 0.0), 0.0) if stp_avg_price is not None else None
+
+        entry_commission_lmt = entry_commission * (lmt_qty / entry_qty) if lmt_qty > 0 and entry_qty > 0 else 0.0
+        entry_commission_stp = entry_commission * (stp_qty / entry_qty) if stp_qty > 0 and entry_qty > 0 else 0.0
+
+        actual_profit = (
+            max((lmt_gross or 0.0) - entry_commission_lmt - lmt_commission, 0.0)
+            if lmt_avg_price is not None
+            else None
+        )
+        actual_loss = (
+            max((stp_gross_loss or 0.0) + entry_commission_stp + stp_commission, 0.0)
+            if stp_avg_price is not None
+            else None
+        )
+
+        # Convert loss values to negative for proper P&L representation
+        stp_gross_loss_display = -stp_gross_loss if stp_gross_loss is not None else None
+        actual_loss_display = -actual_loss if actual_loss is not None else None
+
+        output.append(
+            {
+                "parentOrderId": parent_order_id,
+                "parentPermId": parent_perm_id,
+                "account": parent.get("account", ""),
+                "symbol": parent.get("symbol", ""),
+                "finInstrument": parent.get("finInstrument", ""),
+                "pnlCurrency": parent.get("currency", ""),
+                "side": "LONG" if direction > 0 else "SHORT",
+                "entryQty": entry_qty,
+                "entryPrice": entry_price,
+                "entryComm": entry_commission,
+                "lmtFilledQty": lmt_qty if lmt_qty > 0 else None,
+                "lmtAvgPrice": lmt_avg_price,
+                "lmtExitComm": lmt_commission if lmt_qty > 0 else None,
+                "actualProfitGross": max(lmt_gross, 0.0) if lmt_gross is not None else None,
+                "actualProfit": actual_profit,
+                "stpFilledQty": stp_qty if stp_qty > 0 else None,
+                "stpAvgPrice": stp_avg_price,
+                "stpExitComm": stp_commission if stp_qty > 0 else None,
+                "actualLossGross": stp_gross_loss_display,
+                "actualLoss": actual_loss_display,
+            }
+        )
+
+    output.sort(key=lambda row: (str(row.get("account", "")), int(row.get("parentOrderId") or 0)))
+    return output
+
+
 def _build_account_summary_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
     rows = list(app.account_summary_rows.values())
     rows.sort(key=lambda row: (str(row.get("account", "")), str(row.get("tag", "")), str(row.get("currency", ""))))
     return rows
+
+
+def _build_account_updates_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
+    rows = list(app.account_update_rows.values())
+    rows.sort(key=lambda row: (str(row.get("account", "")), str(row.get("tag", "")), str(row.get("currency", ""))))
+    return rows
+
+
+def _has_currency_cash_data_in_rows(rows: Iterable[dict[str, Any]]) -> bool:
+    for row in rows:
+        tag_value = str(row.get("tag", "")).strip()
+        if tag_value in _REQUIRED_CURRENCY_CASH_TAGS:
+            return True
+    return False
+
+
+def _resolve_account_base_currency(app: IBKROrderManagementApp, account: str) -> str:
+    account_code = str(account or "").strip()
+    if not account_code:
+        return ""
+
+    candidate_rows = [*app.account_summary_rows.values(), *app.account_update_rows.values()]
+
+    for row in candidate_rows:
+        if str(row.get("account") or "").strip() != account_code:
+            continue
+        tag_value = str(row.get("tag") or "").strip()
+        value_text = str(row.get("value") or "").strip().upper()
+        currency_text = str(row.get("currency") or "").strip().upper()
+        if tag_value in {"BaseCurrency", "Currency"} and value_text and value_text != "BASE":
+            return value_text
+        if tag_value in {"NetLiquidation", "TotalCashValue"} and currency_text and currency_text != "BASE":
+            return currency_text
+
+    return ""
+
+
+def _resolve_exchange_rate_map(app: IBKROrderManagementApp, account: str) -> dict[str, float]:
+    account_code = str(account or "").strip()
+    if not account_code:
+        return {}
+
+    rates: dict[str, float] = {}
+    candidate_rows = [*app.account_summary_rows.values(), *app.account_update_rows.values()]
+    for row in candidate_rows:
+        if str(row.get("account") or "").strip() != account_code:
+            continue
+        tag_value = str(row.get("tag") or "").strip()
+        currency_text = str(row.get("currency") or "").strip().upper()
+        if tag_value != "ExchangeRate" or not currency_text:
+            continue
+        parsed_rate = _to_float(row.get("value"))
+        if parsed_rate is None or parsed_rate <= 0:
+            continue
+        rates[currency_text] = parsed_rate
+
+    return rates
+
+
+def _convert_amount_to_usd(
+    app: IBKROrderManagementApp,
+    account: str,
+    pnl_currency: Any,
+    amount: Any,
+) -> float | None:
+    amount_value = _to_float(amount)
+    if amount_value is None:
+        return None
+
+    currency = str(pnl_currency or "").strip().upper()
+    if not currency:
+        return None
+    if currency == "USD":
+        return amount_value
+
+    base_currency = _resolve_account_base_currency(app, account).strip().upper()
+    rates = _resolve_exchange_rate_map(app, account)
+
+    # ExchangeRate is interpreted as currency -> base_currency.
+    if currency == "BASE" and base_currency:
+        currency = base_currency
+
+    if base_currency == "USD":
+        rate_ccy_to_usd = rates.get(currency)
+        if rate_ccy_to_usd is not None and rate_ccy_to_usd > 0:
+            return amount_value * rate_ccy_to_usd
+        return None
+
+    if base_currency and base_currency != "USD":
+        rate_usd_to_base = rates.get("USD")
+        if rate_usd_to_base is None or rate_usd_to_base <= 0:
+            return None
+        if currency == base_currency:
+            return amount_value / rate_usd_to_base
+
+        rate_ccy_to_base = rates.get(currency)
+        if rate_ccy_to_base is None or rate_ccy_to_base <= 0:
+            return None
+        return amount_value * (rate_ccy_to_base / rate_usd_to_base)
+
+    return None
+
+
+def _add_usd_columns_to_pnl_rows(
+    rows: list[dict[str, Any]],
+    app: IBKROrderManagementApp,
+    value_fields: list[str],
+) -> None:
+    for row in rows:
+        account = str(row.get("account") or "").strip()
+        pnl_currency = row.get("pnlCurrency")
+        for field_name in value_fields:
+            row[f"{field_name}USD"] = _convert_amount_to_usd(
+                app=app,
+                account=account,
+                pnl_currency=pnl_currency,
+                amount=row.get(field_name),
+            )
+
+
+def _format_optional_cash_value(raw: float | None) -> str:
+    if raw is None or not math.isfinite(raw):
+        return ""
+    return f"{raw:,.2f}"
 
 
 def _build_positions_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
@@ -922,6 +1581,96 @@ def _build_positions_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
         )
     )
     return rows
+
+
+def _build_currency_cash_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
+    """Aggregate CashBalance and NetLiquidationByCurrency account summary tags into a per-currency view.
+
+    IB returns one row per currency for each tag, e.g.:
+      tag=CashBalance,      currency=USD, value=12345.67
+      tag=CashBalance,      currency=JPY, value=-4993.00
+      tag=NetLiquidationByCurrency, currency=USD, value=14000.00
+    We merge both tags side-by-side per (account, currency) for easy reading.
+    The special BASE currency row represents the account base-currency equivalent total.
+    """
+    cash_by_key: dict[tuple[str, str], str] = {}
+    netliq_by_key: dict[tuple[str, str], str] = {}
+
+    for (account, tag, currency), row in app.account_summary_rows.items():
+        acct = str(account or "")
+        normalized_tag = str(tag or "").strip()
+        ccy = str(currency or "")
+        if normalized_tag == "CashBalance":
+            cash_by_key[(acct, ccy)] = row.get("value", "")
+        elif normalized_tag == "NetLiquidationByCurrency":
+            netliq_by_key[(acct, ccy)] = row.get("value", "")
+
+    for (account, tag, currency), row in app.account_update_rows.items():
+        acct = str(account or "")
+        normalized_tag = str(tag or "").strip()
+        ccy = str(currency or "")
+        if normalized_tag == "CashBalance" and (acct, ccy) not in cash_by_key:
+            cash_by_key[(acct, ccy)] = row.get("value", "")
+        elif normalized_tag == "NetLiquidationByCurrency" and (acct, ccy) not in netliq_by_key:
+            netliq_by_key[(acct, ccy)] = row.get("value", "")
+
+    # Union of all (account, currency) keys from both tags, sorted for stable output.
+    # BASE currency row (IB account base) sorts last for readability.
+    all_keys = sorted(
+        set(cash_by_key.keys()) | set(netliq_by_key.keys()),
+        key=lambda k: (k[0], "~" if k[1].upper() == "BASE" else k[1]),
+    )
+
+    rows: list[dict[str, Any]] = []
+    for acct, ccy in all_keys:
+        cash_val = cash_by_key.get((acct, ccy), "")
+        netliq_val = netliq_by_key.get((acct, ccy), "")
+        base_ccy = _resolve_account_base_currency(app, acct)
+        exchange_rates = _resolve_exchange_rate_map(app, acct)
+
+        cash_float = _to_float(cash_val)
+        netliq_float = _to_float(netliq_val)
+
+        rate_to_base: float | None = None
+        if ccy == "BASE":
+            rate_to_base = 1.0
+        elif base_ccy and ccy == base_ccy:
+            rate_to_base = 1.0
+        else:
+            rate_to_base = exchange_rates.get(ccy)
+
+        cash_base_value = cash_float * rate_to_base if cash_float is not None and rate_to_base is not None else None
+        netliq_base_value = netliq_float * rate_to_base if netliq_float is not None and rate_to_base is not None else None
+
+        # Format numeric values with commas for large amounts.
+        cash_display = _format_cash_value(cash_val)
+        netliq_display = _format_cash_value(netliq_val)
+
+        rows.append(
+            {
+                "account": acct,
+                "currency": ccy,
+                "cashBalance": cash_display,
+                "netLiquidationByCurrency": netliq_display,
+                "baseCurrency": base_ccy or "BASE",
+                "cashBalanceBase": _format_optional_cash_value(cash_base_value),
+                "netLiquidationByCurrencyBase": _format_optional_cash_value(netliq_base_value),
+            }
+        )
+    return rows
+
+
+def _format_cash_value(raw: Any) -> str:
+    """Format a cash value string: show with 2 decimal places and thousands separator if numeric."""
+    if raw in (None, ""):
+        return ""
+    try:
+        num = float(str(raw).replace(",", ""))
+        if not math.isfinite(num):
+            return str(raw)
+        return f"{num:,.2f}"
+    except (TypeError, ValueError):
+        return str(raw)
 
 
 def _build_account_pnl_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
@@ -947,7 +1696,9 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
     completed_rows = _build_completed_orders_rows(app)
     execution_rows = _build_execution_report_rows(app)
     account_summary_rows = _build_account_summary_rows(app)
+    account_updates_rows = _build_account_updates_rows(app)
     positions_rows = _build_positions_rows(app)
+    currency_cash_rows = _build_currency_cash_rows(app)
     account_pnl_rows = _build_account_pnl_rows(app)
     position_pnl_rows = _build_position_pnl_rows(app)
 
@@ -958,13 +1709,38 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
     position_pnl_rows = _apply_fin_instrument_filter(position_pnl_rows, fin_instrument_filter)
 
     execution_summary = _build_execution_summary(execution_rows)
+    targeted_released_pnl_rows = _build_targeted_released_pnl_rows(
+        completed_rows=completed_rows,
+        open_rows=open_rows,
+        execution_rows=execution_rows,
+    )
+    actual_pnl_rows = _build_actual_pnl_rows(
+        completed_rows=completed_rows,
+        execution_rows=execution_rows,
+    )
+    _add_usd_columns_to_pnl_rows(
+        rows=targeted_released_pnl_rows,
+        app=app,
+        value_fields=["targetProfitGross", "targetProfit", "targetLossGross", "targetLoss"],
+    )
+    _add_usd_columns_to_pnl_rows(
+        rows=actual_pnl_rows,
+        app=app,
+        value_fields=["actualProfitGross", "actualProfit", "actualLossGross", "actualLoss"],
+    )
+    actual_pnl_summary = {
+        "parentOrderId": "TOTAL",
+        "actualProfitUSD": _sum_column(actual_pnl_rows, "actualProfitUSD"),
+        "actualLossUSD": _sum_column(actual_pnl_rows, "actualLossUSD"),
+    }
 
     print("\n=== IBKR ORDER / EXECUTION ANALYTICS REPORT ===")
     print(
         f"AsOfUTC={datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} "
         f"OpenOrders={len(open_rows)} CompletedOrders={len(completed_rows)} "
         f"Executions={len(execution_rows)} Commissions={len(app.commissions_by_exec_id)} "
-        f"AccountSummary={len(account_summary_rows)} Positions={len(positions_rows)} "
+        f"AccountSummary={len(account_summary_rows)} AccountUpdates={len(account_updates_rows)} Positions={len(positions_rows)} "
+        f"CurrencyCash={len(currency_cash_rows)} "
         f"AcctPnL={len(account_pnl_rows)} PosPnL={len(position_pnl_rows)}"
     )
 
@@ -975,6 +1751,27 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
             [("account", "account"), ("tag", "tag"), ("value", "value"), ("ccy", "currency")],
         )
     )
+
+    print(
+        _format_table(
+            "ACCOUNT VALUES (reqAccountUpdates fallback)",
+            account_updates_rows,
+            [("account", "account"), ("tag", "tag"), ("value", "value"), ("ccy", "currency")],
+        )
+    )
+
+    if (account_summary_rows or account_updates_rows) and not currency_cash_rows:
+        available_tags = sorted(
+            {
+                str(row.get("tag", "")).strip()
+                for row in [*account_summary_rows, *account_updates_rows]
+                if str(row.get("tag", "")).strip()
+            }
+        )
+        print(
+            "[IBKR][warn] Account-value requests returned rows, but none for CashBalance/NetLiquidationByCurrency. "
+            f"Available tags: {', '.join(available_tags) if available_tags else '(none)'}"
+        )
 
     print(
         _format_table(
@@ -990,6 +1787,22 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
                 ("exchange", "exchange"),
                 ("position", "position"),
                 ("avgCost", "avgCost"),
+            ],
+        )
+    )
+
+    print(
+        _format_table(
+            "CURRENCY CASH BALANCES (CashBalance + NetLiquidationByCurrency)",
+            currency_cash_rows,
+            [
+                ("account", "account"),
+                ("currency", "currency"),
+                ("cashBalance", "cashBalance"),
+                ("netLiqByCcy", "netLiquidationByCurrency"),
+                ("baseCcy", "baseCurrency"),
+                ("cashInBase", "cashBalanceBase"),
+                ("netLiqBase", "netLiquidationByCurrencyBase"),
             ],
         )
     )
@@ -1122,6 +1935,73 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
         )
     )
 
+    print(
+        _format_table(
+            "TARGETED P&L",
+            targeted_released_pnl_rows,
+            [
+                ("pOId", "parentOrderId"),
+                ("pPId", "parentPermId"),
+                ("acct", "account"),
+                ("sym", "symbol"),
+                ("instr", "finInstrument"),
+                ("ccy", "pnlCurrency"),
+                ("side", "side"),
+                ("entryQty", "entryQty"),
+                ("entryPx", "entryPrice"),
+                ("entryCm", "entryCommission"),
+                ("lmtOId", "lmtOrderId"),
+                ("lmtPx", "lmtPrice"),
+                ("lmtXCm", "estExitCommLmt"),
+                ("tgtPrGr", "targetProfitGross"),
+                ("tgtPrGrUSD", "targetProfitGrossUSD"),
+                ("tgtPr", "targetProfit"),
+                ("tgtPrUSD", "targetProfitUSD"),
+                ("stpOId", "stpOrderId"),
+                ("stpPx", "stpPrice"),
+                ("stpXCm", "estExitCommStp"),
+                ("tgtLsGr", "targetLossGross"),
+                ("tgtLsGrUSD", "targetLossGrossUSD"),
+                ("tgtLs", "targetLoss"),
+                ("tgtLsUSD", "targetLossUSD"),
+            ],
+        )
+    )
+
+    print(
+        _format_table(
+            "ACTUAL P&L",
+            actual_pnl_rows,
+            [
+                ("pOId", "parentOrderId"),
+                ("pPId", "parentPermId"),
+                ("acct", "account"),
+                ("sym", "symbol"),
+                ("instr", "finInstrument"),
+                ("ccy", "pnlCurrency"),
+                ("side", "side"),
+                ("entryQty", "entryQty"),
+                ("entryPx", "entryPrice"),
+                ("entryCm", "entryComm"),
+                ("lmtQty", "lmtFilledQty"),
+                ("lmtPx", "lmtAvgPrice"),
+                ("lmtXCm", "lmtExitComm"),
+                ("actPrGr", "actualProfitGross"),
+                ("actPrGrUSD", "actualProfitGrossUSD"),
+                ("actPr", "actualProfit"),
+                ("actPrUSD", "actualProfitUSD"),
+                ("stpQty", "stpFilledQty"),
+                ("stpPx", "stpAvgPrice"),
+                ("stpXCm", "stpExitComm"),
+                ("actLsGr", "actualLossGross"),
+                ("actLsGrUSD", "actualLossGrossUSD"),
+                ("actLs", "actualLoss"),
+                ("actLsUSD", "actualLossUSD"),
+            ],
+            summary_row=actual_pnl_summary,
+        )
+    )
+
     if app.errors:
         print(
             _format_table(
@@ -1183,18 +2063,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exec-req-id", type=int, default=9001, help="Request id for reqExecutions")
     parser.add_argument("--account-summary-req-id", type=int, default=9101, help="Request id for reqAccountSummary")
     parser.add_argument("--account-summary-group", type=str, default="All", help="Group for reqAccountSummary (default: All)")
-    parser.add_argument(
-        "--account-summary-tags",
-        type=str,
-        default=_DEFAULT_ACCOUNT_SUMMARY_TAGS,
-        help="CSV tags for reqAccountSummary",
-    )
+    parser.add_argument("--account-summary-tags", type=str, default=_DEFAULT_ACCOUNT_SUMMARY_TAGS, help="CSV tags for reqAccountSummary")
     parser.add_argument(
         "--account-summary-all-tags",
         action="store_true",
         help="Use full IB account summary tag set (AccountSummaryTags.GetAllTags/AllTags)",
     )
     parser.add_argument("--skip-account-summary", action="store_true", help="Skip reqAccountSummary")
+    parser.add_argument("--skip-account-updates", action="store_true", help="Skip reqAccountUpdates fallback snapshot")
     parser.add_argument("--skip-positions", action="store_true", help="Skip reqPositions")
     parser.add_argument("--skip-pnl", action="store_true", help="Skip reqPnL and reqPnLSingle")
     parser.add_argument("--pnl-account", type=str, default="", help="Account for reqPnL/reqPnLSingle (auto-resolve if omitted)")
@@ -1221,6 +2097,7 @@ def main() -> int:
         print(f"[IBKR] Connecting to {host}:{port} with clientId={client_id} ...")
         app.start_and_connect(host=host, port=port, client_id=client_id, timeout_seconds=args.timeout)
         print("[IBKR] Connected.")
+        app.request_managed_accounts(timeout_seconds=args.timeout)
 
         app.request_open_orders(timeout_seconds=args.timeout)
         app.request_completed_orders(timeout_seconds=args.timeout, api_only=args.api_only_completed)
@@ -1231,12 +2108,27 @@ def main() -> int:
         )
         if not args.skip_account_summary:
             account_summary_tags = _get_all_account_summary_tags() if args.account_summary_all_tags else args.account_summary_tags
+            account_summary_tags = _merge_account_summary_tags(account_summary_tags)
             app.request_account_summary(
                 req_id=args.account_summary_req_id,
                 group=args.account_summary_group,
                 tags=account_summary_tags,
                 timeout_seconds=args.timeout,
             )
+        needs_account_updates_fallback = (not args.skip_account_updates) and not _has_currency_cash_data_in_rows(app.account_summary_rows.values())
+        account_code_for_updates = str(args.account or "").strip()
+        if needs_account_updates_fallback:
+            if not account_code_for_updates:
+                account_code_for_updates = next(
+                    (str(row.get("account") or "").strip() for row in app.account_summary_rows.values() if str(row.get("account") or "").strip()),
+                    "",
+                )
+            if not account_code_for_updates and app.managed_accounts:
+                account_code_for_updates = app.managed_accounts[0]
+            if account_code_for_updates:
+                app.request_account_updates(account=account_code_for_updates, timeout_seconds=args.timeout)
+            else:
+                print("[IBKR][warn] Skipping reqAccountUpdates fallback because no account code could be resolved.")
         if not args.skip_positions:
             app.request_positions(timeout_seconds=args.timeout)
         if not args.skip_pnl:
@@ -1282,5 +2174,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 
