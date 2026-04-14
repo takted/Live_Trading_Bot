@@ -46,7 +46,7 @@
     "risk_percent": 0.01,
     "max_position_size_fraction": 1.0,
     "long_atr_sl_multiplier": 4.4,
-    "long_atr_tp_multiplier": 6.8,
+    "long_atr_tp_multiplier": 5.0,
     "short_atr_sl_multiplier": 2.5,
     "short_atr_tp_multiplier": 6.5,
     "long_use_ema_order_condition": false,

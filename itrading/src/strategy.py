@@ -2231,12 +2231,13 @@ class ITradingStrategy(bt.Strategy):
                 bar_high = float(self.data.high[0])
 
                 # Set stop and take levels based on signal direction
-                if signal_direction == 'LONG':
-                    self.stop_level = bar_low - atr_now * self.p.long_atr_sl_multiplier
-                    self.take_level = bar_high + atr_now * self.p.long_atr_tp_multiplier
-                elif signal_direction == 'SHORT':
-                    self.stop_level = bar_high + atr_now * self.p.short_atr_sl_multiplier  # Stop above for shorts
-                    self.take_level = bar_low - atr_now * self.p.short_atr_tp_multiplier  # Take below for shorts
+                self.stop_level, self.take_level = self._calculate_exit_levels(
+                    signal_direction=signal_direction,
+                    atr_now=atr_now,
+                    bar_low=bar_low,
+                    bar_high=bar_high,
+                    entry_price=entry_price,
+                )
 
                 self.initial_stop_level = self.stop_level
 
@@ -2382,6 +2383,20 @@ class ITradingStrategy(bt.Strategy):
             return self._standard_short_entry_signal(dt)
         else:
             return False
+
+    def _calculate_exit_levels(self, signal_direction, atr_now, bar_low, bar_high, entry_price):
+        """Return stop-loss and take-profit levels for a new signal.
+
+        Pair-specific strategies can override this to tune exit placement without
+        changing the shared entry pipeline for the rest of the instruments.
+        """
+        if signal_direction == 'LONG':
+            stop_level = bar_low - atr_now * self.p.long_atr_sl_multiplier
+            take_level = bar_high + atr_now * self.p.long_atr_tp_multiplier
+        else:
+            stop_level = bar_high + atr_now * self.p.short_atr_sl_multiplier
+            take_level = bar_low - atr_now * self.p.short_atr_tp_multiplier
+        return stop_level, take_level
 
     def _standard_long_entry_signal(self, dt):
         """Standard LONG entry logic without pullback system"""
@@ -4546,7 +4561,22 @@ class ITradingStrategyAUDUSD(ITradingStrategy):
         contract_size=100000,
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
+        long_atr_tp_multiplier=5.0,
     )
+
+    def _calculate_exit_levels(self, signal_direction, atr_now, bar_low, bar_high, entry_price):
+        """AUDUSD override: place LONG TP closer to the fill for faster DAY LMT exits.
+
+        The shared strategy anchors LONG take-profit from the signal bar high,
+        which can overshoot the actual market-fill price by several pips and leave
+        SELL LMT orders resting too long. For AUDUSD only, keep the existing stop
+        model but anchor LONG TP from the actual entry price instead.
+        """
+        if signal_direction == 'LONG':
+            stop_level = bar_low - atr_now * self.p.long_atr_sl_multiplier
+            take_level = entry_price + atr_now * self.p.long_atr_tp_multiplier
+            return stop_level, take_level
+        return super()._calculate_exit_levels(signal_direction, atr_now, bar_low, bar_high, entry_price)
 
 
 class ITradingStrategyEURUSD(ITradingStrategy):
