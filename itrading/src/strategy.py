@@ -1925,7 +1925,10 @@ class ITradingStrategy(bt.Strategy):
             return
 
         current_close = float(self.data.close[0])
-        self._tagged_print('Current Bar', f"Datetime: {dt.strftime('%Y-%m-%d %H:%M:%S')} | Closing Price: {current_close}")
+        self._tagged_print(
+            'Current Bar',
+            f"Datetime: {dt.strftime('%Y-%m-%d %H:%M:%S')} | Open Price: {float(self.data.open[0])} | High: {float(self.data.high[0])} | Low: {float(self.data.low[0])} | Closing Price: {current_close}"
+        )
 
         # Track position state changes
         if self.position:

@@ -2146,7 +2146,7 @@ def on_bar_update(bars, has_new_bar):
     if current_tick_info != g_last_tick_info:
         _console_print_with_instrument(
             'Live Tick',
-            f"{current_time.strftime('%Y-%m-%d %H:%M:%S')} | Open Price: {latest_bar.open_} | High: {latest_bar.high} | Low: {latest_bar.low} | Closing Price: {latest_bar.close}")
+            f"Datetime: {current_time.strftime('%Y-%m-%d %H:%M:%S')} | Open Price: {latest_bar.open_} | High: {latest_bar.high} | Low: {latest_bar.low} | Closing Price: {latest_bar.close}")
         g_last_tick_info = current_tick_info
 
     # More robust boundary check
