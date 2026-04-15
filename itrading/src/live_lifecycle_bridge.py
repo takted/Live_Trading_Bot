@@ -27,6 +27,7 @@ class LiveTradeState:
     parent_order_id: Optional[int] = None
     take_profit_order_id: Optional[int] = None
     stop_loss_order_id: Optional[int] = None
+    manual_exit_order_id: Optional[int] = None
     entry_time: Optional[datetime] = None
     entry_price: Optional[float] = None
     filled_size: float = 0.0
@@ -38,6 +39,7 @@ class LiveTradeState:
     commission: float = 0.0
     net_pnl: Optional[float] = None
     status: str = "PENDING_SUBMIT"
+    pending_exit_reason: Optional[str] = None
 
 
 class LiveLifecycleBridge:
@@ -85,6 +87,7 @@ class LiveLifecycleBridge:
                 "parent_order_id": state.parent_order_id,
                 "take_profit_order_id": state.take_profit_order_id,
                 "stop_loss_order_id": state.stop_loss_order_id,
+                "manual_exit_order_id": state.manual_exit_order_id,
                 "entry_time": _dt(state.entry_time),
                 "entry_price": state.entry_price,
                 "filled_size": state.filled_size,
@@ -96,6 +99,7 @@ class LiveLifecycleBridge:
                 "commission": state.commission,
                 "net_pnl": state.net_pnl,
                 "status": state.status,
+                "pending_exit_reason": state.pending_exit_reason,
             }
 
         return {
@@ -182,6 +186,7 @@ class LiveLifecycleBridge:
                         parent_order_id=t.get("parent_order_id"),
                         take_profit_order_id=t.get("take_profit_order_id"),
                         stop_loss_order_id=t.get("stop_loss_order_id"),
+                        manual_exit_order_id=t.get("manual_exit_order_id"),
                         entry_time=_parse_dt(t.get("entry_time")),
                         entry_price=t.get("entry_price"),
                         filled_size=float(t.get("filled_size", 0.0)),
@@ -193,6 +198,7 @@ class LiveLifecycleBridge:
                         commission=float(t.get("commission", 0.0) or 0.0),
                         net_pnl=t.get("net_pnl"),
                         status=str(t.get("status", "PENDING_SUBMIT")),
+                        pending_exit_reason=t.get("pending_exit_reason"),
                     )
                     bridge.trades[trade_id] = state
                 except Exception as inner:
@@ -482,6 +488,63 @@ class LiveLifecycleBridge:
             status="PRESUBMITTED",
         )
 
+    def register_manual_exit_order(
+        self,
+        trade_id: str,
+        exit_order_id: int,
+        reason: str,
+        action: str,
+        quantity: float,
+        tif: str = "DAY",
+    ) -> None:
+        """Attach an ad-hoc market exit order (e.g. time exit) to an existing live trade."""
+        state = self.trades.get(trade_id)
+        if state is None:
+            self.logger.error(f"[LIVE-BRIDGE] Unknown trade_id when mapping manual exit order: {trade_id}")
+            return
+
+        exit_order_id = int(exit_order_id or 0)
+        if exit_order_id <= 0:
+            return
+
+        state.manual_exit_order_id = exit_order_id
+        state.pending_exit_reason = str(reason or "MANUAL_EXIT").upper()
+        state.status = "EXITING"
+        self.order_to_trade[exit_order_id] = trade_id
+        self._upsert_order_record(
+            exit_order_id,
+            trade_id=trade_id,
+            symbol=state.symbol,
+            action=str(action or '').upper() or None,
+            order_type="MKT",
+            quantity=float(quantity or state.filled_size or state.intended_size),
+            tif=str(tif or '').upper() or None,
+            parent_id=0,
+            status="SUBMITTED",
+        )
+
+    def update_trade_protection(
+        self,
+        trade_id: str,
+        *,
+        take_profit: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+    ) -> None:
+        """Persist dynamic TP/SL updates so snapshots reflect the current live protection."""
+        state = self.trades.get(trade_id)
+        if state is None:
+            return
+
+        if take_profit is not None:
+            state.take_profit = float(take_profit)
+            if state.take_profit_order_id:
+                self._upsert_order_record(int(state.take_profit_order_id), limit_price=float(take_profit))
+
+        if stop_loss is not None:
+            state.stop_loss = float(stop_loss)
+            if state.stop_loss_order_id:
+                self._upsert_order_record(int(state.stop_loss_order_id), stop_price=float(stop_loss))
+
     def on_order_status(
         self,
         order_id: Optional[int],
@@ -552,17 +615,32 @@ class LiveLifecycleBridge:
             self._mark_entry_filled(trade, fill_price, float(filled or trade.intended_size))
             return
 
-        if order_id in (trade.take_profit_order_id, trade.stop_loss_order_id) and normalized_status == "FILLED":
-            reason = "TAKE_PROFIT" if order_id == trade.take_profit_order_id else "STOP_LOSS"
+        if order_id in (trade.take_profit_order_id, trade.stop_loss_order_id, trade.manual_exit_order_id) and normalized_status == "FILLED":
+            if order_id == trade.take_profit_order_id:
+                reason = "TAKE_PROFIT"
+            elif order_id == trade.stop_loss_order_id:
+                reason = "STOP_LOSS"
+            else:
+                reason = str(trade.pending_exit_reason or "MANUAL_EXIT").upper()
             fill_qty = float(filled or trade.filled_size or trade.intended_size)
             self._mark_exit_filled(trade, fill_price, fill_qty, reason)
             return
 
         if normalized_status in TERMINAL_ORDER_STATES and trade.status not in {"CLOSED", "CANCELLED", "REJECTED"}:
             if normalized_status == "REJECTED":
-                trade.status = "REJECTED"
+                if order_id == trade.manual_exit_order_id and trade.entry_price is not None:
+                    trade.status = "OPEN"
+                    trade.manual_exit_order_id = None
+                    trade.pending_exit_reason = None
+                else:
+                    trade.status = "REJECTED"
             elif normalized_status in {"CANCELLED", "API_CANCELLED", "INACTIVE"}:
-                trade.status = "CANCELLED"
+                if order_id == trade.manual_exit_order_id and trade.entry_price is not None:
+                    trade.status = "OPEN"
+                    trade.manual_exit_order_id = None
+                    trade.pending_exit_reason = None
+                elif order_id == trade.parent_order_id or trade.entry_price is None:
+                    trade.status = "CANCELLED"
 
     def on_execution(
         self,
@@ -628,6 +706,10 @@ class LiveLifecycleBridge:
 
         if order_id == trade.stop_loss_order_id and trade.status != "CLOSED":
             self._mark_exit_filled(trade, price, quantity, "STOP_LOSS")
+            return
+
+        if order_id == trade.manual_exit_order_id and trade.status != "CLOSED":
+            self._mark_exit_filled(trade, price, quantity, str(trade.pending_exit_reason or "MANUAL_EXIT").upper())
 
     def ingest_execution_orders(self, fills: List[Any], symbol: str) -> int:
         """Backfill order_book with execution-derived FILLED orders for today's visibility."""
@@ -1020,7 +1102,12 @@ class LiveLifecycleBridge:
         trade.exit_reason = reason
         trade.status = "CLOSED"
 
-        exit_order_id = trade.take_profit_order_id if reason == 'TAKE_PROFIT' else trade.stop_loss_order_id
+        if reason == 'TAKE_PROFIT':
+            exit_order_id = trade.take_profit_order_id
+        elif reason == 'STOP_LOSS':
+            exit_order_id = trade.stop_loss_order_id
+        else:
+            exit_order_id = trade.manual_exit_order_id
         if exit_order_id:
             self._upsert_order_record(
                 int(exit_order_id),
@@ -1032,6 +1119,8 @@ class LiveLifecycleBridge:
                 avg_fill_price=trade.exit_price,
                 last_fill_price=trade.exit_price,
             )
+
+        trade.pending_exit_reason = None
 
         size = abs(float(fill_qty or trade.filled_size or trade.intended_size))
         entry_price = float(trade.entry_price or 0.0)

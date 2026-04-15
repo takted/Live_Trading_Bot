@@ -354,6 +354,16 @@ class ITradingStrategy(bt.Strategy):
         long_atr_tp_multiplier=6.8,
         short_atr_sl_multiplier=2.5,
         short_atr_tp_multiplier=6.5,
+        enable_entry_relative_tp=False,
+        enable_time_exit=False,
+        time_exit_bars=0,
+        enable_break_even_stop=False,
+        break_even_trigger_pips=0.0,
+        break_even_plus_pips=0.0,
+        enable_trailing_stop=False,
+        trailing_stop_trigger_pips=0.0,
+        trailing_stop_distance_pips=0.0,
+        trailing_stop_step_pips=0.0,
 
         # === LONG ENTRY FILTERS ===
         long_use_ema_order_condition=False,
@@ -4673,6 +4683,18 @@ class ITradingStrategyGBPUSD(ITradingStrategy):
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
     )
+
+    def _calculate_exit_levels(self, signal_direction, atr_now, bar_low, bar_high, entry_price):
+        """GBPUSD plugin: optionally anchor TP from the entry price instead of signal-bar extremes."""
+        if bool(getattr(self.p, 'enable_entry_relative_tp', False)):
+            if signal_direction == 'LONG':
+                stop_level = bar_low - atr_now * self.p.long_atr_sl_multiplier
+                take_level = entry_price + atr_now * self.p.long_atr_tp_multiplier
+            else:
+                stop_level = bar_high + atr_now * self.p.short_atr_sl_multiplier
+                take_level = entry_price - atr_now * self.p.short_atr_tp_multiplier
+            return stop_level, take_level
+        return super()._calculate_exit_levels(signal_direction, atr_now, bar_low, bar_high, entry_price)
 
     def _phase2_confirm_pullback(self, armed_direction):
         """GBPUSD override: honor *_use_pullback_entry flags by bypassing phase2 when disabled."""

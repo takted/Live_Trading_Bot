@@ -1216,6 +1216,251 @@ def _get_net_position_for_forex_pair(forex_pair: str) -> Optional[dict]:
     }
 
 
+def _as_utc_dt(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _get_active_live_trade_for_instrument(forex_pair: str):
+    """Return the freshest active live-bridge trade for one instrument, if any."""
+    if live_lifecycle_bridge is None:
+        return None
+
+    pair = str(forex_pair or '').strip().upper().replace('.', '')
+    candidates = []
+    for trade in live_lifecycle_bridge.trades.values():
+        if str(getattr(trade, 'status', '') or '').upper() in {'CLOSED', 'CANCELLED', 'REJECTED'}:
+            continue
+        trade_symbol = str(getattr(trade, 'symbol', '') or '').strip().upper().replace('.', '')
+        if trade_symbol != pair:
+            continue
+        candidates.append(trade)
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: _as_utc_dt(getattr(item, 'entry_time', None)) or _as_utc_dt(getattr(item, 'decision_time', None)) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return candidates[0]
+
+
+def _get_open_trade_snapshot_by_order_id(forex_pair: str, order_id: int):
+    """Locate the live IB open-trade object for a specific order id/instrument."""
+    if ib is None or not ib.isConnected() or int(order_id or 0) <= 0:
+        return None
+
+    try:
+        open_trades = ib.openTrades()
+    except Exception as exc:
+        logger.warning(f"Could not query IB openTrades while locating order {order_id} for {forex_pair}: {exc}")
+        return None
+
+    for trade in open_trades or []:
+        contract = getattr(trade, 'contract', None)
+        order = getattr(trade, 'order', None)
+        if order is None or not _contract_matches_forex_pair(contract, forex_pair):
+            continue
+        if _safe_int(getattr(order, 'orderId', 0), 0) == int(order_id):
+            return trade
+
+    return None
+
+
+def _cancel_open_order_for_instrument(forex_pair: str, order_id: int) -> bool:
+    """Cancel one active IB order when it is still open for the instrument."""
+    trade = _get_open_trade_snapshot_by_order_id(forex_pair, order_id)
+    if trade is None:
+        return False
+
+    try:
+        ib.cancelOrder(trade.order)
+        return True
+    except Exception as exc:
+        logger.warning(f"Could not cancel order {order_id} for {forex_pair}: {exc}")
+        return False
+
+
+def _replace_open_stop_order(forex_pair: str, order_id: int, new_stop_price: float) -> bool:
+    """Modify an existing live STP order in place by resubmitting the same order id."""
+    trade = _get_open_trade_snapshot_by_order_id(forex_pair, order_id)
+    if trade is None:
+        return False
+
+    order = getattr(trade, 'order', None)
+    if order is None or str(getattr(order, 'orderType', '') or '').upper() != 'STP':
+        return False
+
+    try:
+        order.auxPrice = float(new_stop_price)
+        ib.placeOrder(trade.contract, order)
+        return True
+    except Exception as exc:
+        logger.warning(f"Could not modify stop order {order_id} for {forex_pair} -> {new_stop_price:.5f}: {exc}")
+        return False
+
+
+async def _manage_gbpusd_dynamic_exits(params: dict, current_price: float, current_dt: datetime) -> bool:
+    """GBPUSD-only live exit plugin: time exit + break-even/trailing stop management.
+
+    Returns True when a pending/manual exit should block new analysis for the cycle.
+    """
+    instrument = str(params.get('FOREX_INSTRUMENT', '') or '').strip().upper()
+    if instrument != 'GBPUSD':
+        return False
+
+    strategy_params = dict(params.get('STRATEGY_PARAMS') or {})
+    enable_time_exit = bool(strategy_params.get('enable_time_exit', False))
+    enable_break_even = bool(strategy_params.get('enable_break_even_stop', False))
+    enable_trailing = bool(strategy_params.get('enable_trailing_stop', False))
+    if not (enable_time_exit or enable_break_even or enable_trailing):
+        return False
+    if current_price <= 0:
+        return False
+
+    position = _get_net_position_for_forex_pair(instrument)
+    if position is None:
+        return False
+
+    trade = _get_active_live_trade_for_instrument(instrument)
+    if trade is None or _safe_float(getattr(trade, 'entry_price', 0.0), 0.0) <= 0:
+        return False
+
+    if int(getattr(trade, 'manual_exit_order_id', 0) or 0) > 0:
+        logger.info(f"[GBPUSD-EXIT] Manual exit already pending for {trade.trade_id}; skipping new analysis this cycle.")
+        return True
+
+    pip_value = _safe_float(strategy_params.get('forex_pip_value', 0.0001), 0.0001)
+    min_distance = max(pip_value * 2.0, 1e-8)
+    price_precision = _safe_int(params.get('PRICE_PRECISION', 5), 5)
+    entry_price = _safe_float(getattr(trade, 'entry_price', 0.0), 0.0)
+    is_long = _safe_float(position.get('qty', 0.0), 0.0) > 0
+    move_pips = ((current_price - entry_price) / pip_value) if is_long else ((entry_price - current_price) / pip_value)
+
+    entry_dt = _as_utc_dt(getattr(trade, 'entry_time', None)) or _as_utc_dt(getattr(trade, 'decision_time', None))
+    current_dt_utc = _as_utc_dt(current_dt) or datetime.now(timezone.utc)
+    elapsed_bars = max(int((current_dt_utc - entry_dt).total_seconds() // 300), 0) if entry_dt is not None else 0
+    current_stop = _safe_float(getattr(trade, 'stop_loss', 0.0), 0.0)
+    time_exit_bars = max(_safe_int(strategy_params.get('time_exit_bars', 0), 0), 0)
+    be_trigger_pips = max(_safe_float(strategy_params.get('break_even_trigger_pips', 0.0), 0.0), 0.0)
+    be_plus_pips = _safe_float(strategy_params.get('break_even_plus_pips', 0.0), 0.0)
+    trail_trigger_pips = max(_safe_float(strategy_params.get('trailing_stop_trigger_pips', 0.0), 0.0), 0.0)
+    trail_distance_pips = max(_safe_float(strategy_params.get('trailing_stop_distance_pips', 0.0), 0.0), 0.0)
+
+    time_exit_status = 'disabled'
+    if enable_time_exit and time_exit_bars > 0:
+        time_exit_status = 'armed' if elapsed_bars >= time_exit_bars else 'waiting'
+
+    break_even_status = 'disabled'
+    if enable_break_even and be_trigger_pips > 0:
+        break_even_status = 'armed' if move_pips >= be_trigger_pips else 'waiting'
+
+    trailing_status = 'disabled'
+    if enable_trailing and trail_trigger_pips > 0 and trail_distance_pips > 0:
+        trailing_status = 'armed' if move_pips >= trail_trigger_pips else 'waiting'
+
+    def _emit_exit_diag(time_status: str, break_even_state: str, trailing_state: str, candidate_stop_price: Optional[float] = None):
+        candidate_text = f"{candidate_stop_price:.5f}" if candidate_stop_price is not None else '-'
+        stop_text = f"{current_stop:.5f}" if current_stop > 0 else '-'
+        logger.info(
+            f"[GBPUSD-EXIT] cycle | trade={trade.trade_id} | side={'LONG' if is_long else 'SHORT'} "
+            f"| entry={entry_price:.5f} current={current_price:.5f} move_pips={move_pips:.1f} "
+            f"| bars_open={elapsed_bars} | stop={stop_text} candidate={candidate_text} "
+            f"| time_exit={time_status}({elapsed_bars}/{time_exit_bars}) "
+            f"| break_even={break_even_state}(trigger={be_trigger_pips:.1f}, plus={be_plus_pips:.1f}) "
+            f"| trailing={trailing_state}(trigger={trail_trigger_pips:.1f}, dist={trail_distance_pips:.1f})")
+
+    if enable_time_exit and entry_dt is not None:
+        if time_exit_bars > 0 and elapsed_bars >= time_exit_bars:
+            _emit_exit_diag('fired', break_even_status, trailing_status)
+            if int(getattr(trade, 'take_profit_order_id', 0) or 0) > 0:
+                _cancel_open_order_for_instrument(instrument, int(trade.take_profit_order_id))
+            if int(getattr(trade, 'stop_loss_order_id', 0) or 0) > 0:
+                _cancel_open_order_for_instrument(instrument, int(trade.stop_loss_order_id))
+
+            exit_action = 'SELL' if is_long else 'BUY'
+            exit_qty = float(int(max(_safe_float(position.get('abs_qty', 0.0), 0.0), 1.0)))
+            exit_tif = str(params.get('IB_PARENT_TIF', DEFAULT_IB_PARENT_TIF) or DEFAULT_IB_PARENT_TIF).strip().upper() or DEFAULT_IB_PARENT_TIF
+            contract = position.get('contract') or Forex(instrument)
+            manual_exit_order_id = ib.client.getReqId()
+            market_exit = Order(
+                orderId=manual_exit_order_id,
+                action=exit_action,
+                orderType='MKT',
+                totalQuantity=exit_qty,
+                tif=exit_tif,
+                transmit=True,
+            )
+            if live_lifecycle_bridge is not None:
+                live_lifecycle_bridge.register_manual_exit_order(
+                    trade_id=trade.trade_id,
+                    exit_order_id=manual_exit_order_id,
+                    reason='TIME_EXIT',
+                    action=exit_action,
+                    quantity=exit_qty,
+                    tif=exit_tif,
+                )
+            ib.placeOrder(contract, market_exit)
+            logger.info(
+                f"[GBPUSD-EXIT] Time exit submitted for {trade.trade_id} | bars_open={elapsed_bars} "
+                f"entry={entry_price:.5f} current={current_price:.5f} qty={exit_qty:.0f}")
+            _save_snapshot_5_minutes(params=params, open_orders=_get_open_orders_for_instrument(instrument))
+            return True
+
+    candidate_stop = None
+
+    if enable_break_even:
+        if be_trigger_pips > 0 and move_pips >= be_trigger_pips:
+            candidate_stop = entry_price + be_plus_pips * pip_value if is_long else entry_price - be_plus_pips * pip_value
+
+    if enable_trailing:
+        if trail_trigger_pips > 0 and trail_distance_pips > 0 and move_pips >= trail_trigger_pips:
+            trailing_stop = current_price - trail_distance_pips * pip_value if is_long else current_price + trail_distance_pips * pip_value
+            if candidate_stop is None:
+                candidate_stop = trailing_stop
+            else:
+                candidate_stop = max(candidate_stop, trailing_stop) if is_long else min(candidate_stop, trailing_stop)
+
+    if candidate_stop is None or int(getattr(trade, 'stop_loss_order_id', 0) or 0) <= 0:
+        _emit_exit_diag(time_exit_status, break_even_status, trailing_status)
+        return False
+
+    step_pips = max(_safe_float(strategy_params.get('trailing_stop_step_pips', 0.0), 0.0), 0.5)
+    step_price = max(step_pips * pip_value, min_distance)
+
+    if is_long:
+        candidate_stop = min(candidate_stop, current_price - min_distance)
+        improved = candidate_stop > (current_stop + step_price)
+    else:
+        candidate_stop = max(candidate_stop, current_price + min_distance)
+        improved = current_stop <= 0 or candidate_stop < (current_stop - step_price)
+
+    if not improved:
+        _emit_exit_diag(time_exit_status, break_even_status, trailing_status, candidate_stop)
+        return False
+
+    new_stop_price = round(candidate_stop, price_precision)
+    if current_stop > 0 and abs(new_stop_price - current_stop) < min_distance:
+        _emit_exit_diag(time_exit_status, break_even_status, trailing_status, new_stop_price)
+        return False
+
+    if _replace_open_stop_order(instrument, int(trade.stop_loss_order_id), new_stop_price):
+        if live_lifecycle_bridge is not None:
+            live_lifecycle_bridge.update_trade_protection(trade.trade_id, stop_loss=new_stop_price)
+        fired_break_even = break_even_status == 'armed' and (not enable_trailing or move_pips < trail_trigger_pips)
+        break_even_diag = 'fired' if fired_break_even else break_even_status
+        trailing_diag = 'fired' if trailing_status == 'armed' and move_pips >= trail_trigger_pips else trailing_status
+        _emit_exit_diag(time_exit_status, break_even_diag, trailing_diag, new_stop_price)
+        logger.info(
+            f"[GBPUSD-EXIT] Stop updated for {trade.trade_id} | move_pips={move_pips:.1f} "
+            f"old={current_stop:.5f} new={new_stop_price:.5f} current={current_price:.5f}")
+    else:
+        _emit_exit_diag(time_exit_status, break_even_status, trailing_status, new_stop_price)
+
+    return False
+
+
 def _parse_ib_completed_time_to_utc(raw_value: Any) -> Optional[datetime]:
     """Parse IB completedTime strings to UTC datetime when possible."""
     text = str(raw_value or '').strip()
@@ -2190,6 +2435,7 @@ async def run_strategy_on_live_bar(live_bars):
         return
 
     latest_live_dt = live_df.index.max().to_pydatetime()
+    latest_live_close = _safe_float(live_df['close'].iloc[-1], 0.0)
 
     instrument = str(params.get('FOREX_INSTRUMENT', '')).strip().upper()
     cycle_open_orders = _get_open_orders_for_instrument(instrument)
@@ -2205,6 +2451,17 @@ async def run_strategy_on_live_bar(live_bars):
         instrument_nlv=last_strategy_instrument_nlv,
         open_orders=cycle_open_orders,
     )
+
+    if await _manage_gbpusd_dynamic_exits(params, latest_live_close, latest_live_dt):
+        _save_snapshot_5_minutes(
+            params=params,
+            last_processed_bar_dt=latest_live_dt,
+            broker_snapshot=last_strategy_broker_snapshot,
+            instrument_nlv=last_strategy_instrument_nlv,
+            open_orders=_get_open_orders_for_instrument(instrument) or cycle_open_orders,
+            log_sections=True,
+        )
+        return
 
     # Keep open-order capture for snapshot persistence, but avoid duplicate pre-cycle logs.
 
@@ -2320,8 +2577,7 @@ async def run_strategy_on_live_bar(live_bars):
             cap_blocked = open_order_slots >= max_positions
 
             signal_units = _safe_float(signal.get('size', 0.0), 0.0)
-            latest_close = _safe_float(live_df['close'].iloc[-1], 0.0)
-            est_margin_usd = _estimate_margin_required_usd(params, signal_units, latest_close)
+            est_margin_usd = _estimate_margin_required_usd(params, signal_units, latest_live_close)
             risk_budget_usd = _resolve_risk_budget_usd(params)
             logger.info(
                 f"[SIGNAL-DIAG] {instrument} dir={signal.get('direction')} "
