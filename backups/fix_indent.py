@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fix indentation issues in run_forex_live.py"""
 
-with open('itrading/scripts/run_forex_live.py', 'r', encoding='utf-8') as f:
+with open('../itrading/scripts/run_forex_live.py', 'r', encoding='utf-8') as f:
     lines = f.readlines()
 
 # Fix all lines with incorrect indentation - replace extra spaces at beginning
@@ -20,7 +20,7 @@ for i, line in enumerate(lines):
     else:
         fixed_lines.append(line)
 
-with open('itrading/scripts/run_forex_live.py', 'w', encoding='utf-8') as f:
+with open('../itrading/scripts/run_forex_live.py', 'w', encoding='utf-8') as f:
     f.writelines(fixed_lines)
 
 print('Fixed indentation in run_forex_live.py')

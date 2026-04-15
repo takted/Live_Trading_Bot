@@ -17,15 +17,11 @@ if /I "%START_10_FOREX_DRY_RUN%"=="1" (
 where wt >nul 2>&1
 if errorlevel 1 (
     echo [WARN] Windows Terminal ^(wt.exe^) not found. Falling back to separate cmd windows.
-    start "GBPUSD" cmd /k "\"%RUNNER%\" GBPUSD"
-    start "AUDUSD" cmd /k "\"%RUNNER%\" AUDUSD"
-    start "EURUSD" cmd /k "\"%RUNNER%\" EURUSD"
-    start "NZDUSD" cmd /k "\"%RUNNER%\" NZDUSD"
+    start "USDCAD" cmd /k "\"%RUNNER%\" USDCAD"
+    start "USDCHF" cmd /k "\"%RUNNER%\" USDCHF"
     exit /b 0
 )
 
 wt -w 0 ^
-  new-tab --title "GBPUSD" cmd /k "\"%RUNNER%\" GBPUSD" ; ^
-  new-tab --title "AUDUSD" cmd /k "\"%RUNNER%\" AUDUSD" ; ^
-  new-tab --title "EURUSD" cmd /k "\"%RUNNER%\" EURUSD" ; ^
-  new-tab --title "NZDUSD" cmd /k "\"%RUNNER%\" NZDUSD"
+  new-tab --title "USDCAD" cmd /k "\"%RUNNER%\" USDCAD" ; ^
+  new-tab --title "USDCHF" cmd /k "\"%RUNNER%\" USDCHF"

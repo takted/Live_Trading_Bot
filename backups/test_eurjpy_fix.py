@@ -9,7 +9,7 @@ print("EURJPY FIX VERIFICATION")
 print("=" * 80)
 
 # Show current configuration
-config_path = Path("itrading/config/parameters_live_eurjpy.json")
+config_path = Path("../itrading/config/parameters_live_eurjpy.json")
 with open(config_path) as f:
     config = json.load(f)
 

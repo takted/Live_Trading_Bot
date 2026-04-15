@@ -639,7 +639,7 @@ class AdvancedMT5TradingMonitorGUI:
                 }
                 
                 # Load configuration from strategy file (supports bundled EXE)
-                strategy_rel_path = f"strategies/sunrise_ogle_{symbol.lower()}.py"
+                strategy_rel_path = f"backups/strategies/sunrise_ogle_{symbol.lower()}.py"
                 strategy_file = self.get_resource_path(strategy_rel_path)
                 
                 config = self.parse_strategy_config(strategy_file, symbol)
@@ -929,7 +929,7 @@ class AdvancedMT5TradingMonitorGUI:
         self.terminal_log(f" {symbol}: Retrying configuration load...", "WARNING", critical=True)
         
         try:
-            strategy_rel_path = f"strategies/sunrise_ogle_{symbol.lower()}.py"
+            strategy_rel_path = f"backups/strategies/sunrise_ogle_{symbol.lower()}.py"
             strategy_file = self.get_resource_path(strategy_rel_path)
             
             config = self.parse_strategy_config(strategy_file, symbol)

@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 
 if __package__:
-    from src.ib_client import IBApiClient
-    from src.market_data import fetch_historical_bars
+    from backups.src.ib_client import IBApiClient
+    from backups.src.market_data import fetch_historical_bars
     from itrading import make_market_order
 else:
     current_file = Path(__file__).resolve()
@@ -13,8 +13,8 @@ else:
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
 
-    from src.ib_client import IBApiClient
-    from src.market_data import fetch_historical_bars
+    from backups.src.ib_client import IBApiClient
+    from backups.src.market_data import fetch_historical_bars
     from itrading import make_market_order
 
 from itrading import SecurityType

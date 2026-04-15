@@ -904,6 +904,37 @@ def _apply_fin_instrument_filter(rows: list[dict[str, Any]], fin_instrument_filt
     ]
 
 
+def _extract_fin_instrument_currencies(fin_instrument_filter: str) -> set[str]:
+    """Extract 3-letter currency codes from a fin-instrument filter text."""
+    text = str(fin_instrument_filter or "").strip().upper()
+    if not text:
+        return set()
+
+    tokens = re.findall(r"[A-Z]{3}", text)
+    if len(tokens) >= 2:
+        return {tokens[0], tokens[1]}
+    if len(tokens) == 1:
+        compact = "".join(ch for ch in text if ch.isalpha())
+        if len(compact) >= 6:
+            return {compact[:3], compact[3:6]}
+        return {tokens[0]}
+    return set()
+
+
+def _apply_account_updates_fin_instrument_filter(rows: list[dict[str, Any]], fin_instrument_filter: str) -> list[dict[str, Any]]:
+    """When fin-instrument is provided, keep account-value rows for related currencies only."""
+    currencies = _extract_fin_instrument_currencies(fin_instrument_filter)
+    if len(currencies) < 2:
+        return rows
+
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        row_currency = str(row.get("currency") or "").strip().upper()
+        if row_currency in currencies:
+            filtered.append(row)
+    return filtered
+
+
 def _build_execution_report_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for execution in app.executions:
@@ -1705,6 +1736,7 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
     open_rows = _apply_fin_instrument_filter(open_rows, fin_instrument_filter)
     completed_rows = _apply_fin_instrument_filter(completed_rows, fin_instrument_filter)
     execution_rows = _apply_fin_instrument_filter(execution_rows, fin_instrument_filter)
+    account_updates_rows = _apply_account_updates_fin_instrument_filter(account_updates_rows, fin_instrument_filter)
     positions_rows = _apply_fin_instrument_filter(positions_rows, fin_instrument_filter)
     position_pnl_rows = _apply_fin_instrument_filter(position_pnl_rows, fin_instrument_filter)
 
@@ -1728,6 +1760,11 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
         app=app,
         value_fields=["actualProfitGross", "actualProfit", "actualLossGross", "actualLoss"],
     )
+    targeted_pnl_summary = {
+        "parentOrderId": "TOTAL",
+        "targetProfitUSD": _sum_column(targeted_released_pnl_rows, "targetProfitUSD"),
+        "targetLossUSD": _sum_column(targeted_released_pnl_rows, "targetLossUSD"),
+    }
     actual_pnl_summary = {
         "parentOrderId": "TOTAL",
         "actualProfitUSD": _sum_column(actual_pnl_rows, "actualProfitUSD"),
@@ -1965,6 +2002,7 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
                 ("tgtLs", "targetLoss"),
                 ("tgtLsUSD", "targetLossUSD"),
             ],
+            summary_row=targeted_pnl_summary,
         )
     )
 
