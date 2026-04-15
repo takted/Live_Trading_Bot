@@ -55,6 +55,17 @@ DEFAULT_FOREX_INSTRUMENT = 'AUDUSD'
 DEFAULT_STRATEGY_CLASS_NAME = 'ITradingStrategyAUDUSD'
 DEFAULT_IB_BRACKET_EXIT_TIF = 'GTC'
 DEFAULT_IB_PARENT_TIF = 'DAY'
+DEFAULT_ENABLE_RESTART_DAY_EXIT_REPAIR = False
+DEFAULT_RESTART_DAY_EXIT_REPAIR_DRY_RUN = False
+DEFAULT_RESTART_DAY_EXIT_REPAIR_PRICE_MODE = 'ATR_MARKET'
+DEFAULT_RESTART_DAY_EXIT_REPAIR_DURATION = '2 D'
+DEFAULT_RESTART_DAY_EXIT_REPAIR_WHAT_TO_SHOW = 'MIDPOINT'
+DEFAULT_RESTART_DAY_EXIT_REPAIR_REQUIRE_DAY_TIF = True
+DEFAULT_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH = False
+DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_MIN_UNITS = 1.0
+DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS = 12.0
+DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY = True
+DEFAULT_IB_API_REQUEST_TIMEOUT_SECONDS = 20.0
 DEFAULT_PORTFOLIO_POLICY = {
     'enabled': False,
     'total_capital_usd': 50000.0,
@@ -461,6 +472,82 @@ def _normalize_live_params(params: dict) -> dict:
         raw_exit_tif = DEFAULT_IB_BRACKET_EXIT_TIF
     normalized['IB_BRACKET_EXIT_TIF'] = raw_exit_tif
 
+    # Optional startup plugin: rebuild expired DAY exits for already-open positions.
+    normalized['ENABLE_RESTART_DAY_EXIT_REPAIR'] = bool(
+        normalized.get('ENABLE_RESTART_DAY_EXIT_REPAIR', DEFAULT_ENABLE_RESTART_DAY_EXIT_REPAIR)
+    )
+    normalized['RESTART_DAY_EXIT_REPAIR_DRY_RUN'] = bool(
+        normalized.get('RESTART_DAY_EXIT_REPAIR_DRY_RUN', DEFAULT_RESTART_DAY_EXIT_REPAIR_DRY_RUN)
+    )
+    normalized['RESTART_DAY_EXIT_REPAIR_PRICE_MODE'] = str(
+        normalized.get('RESTART_DAY_EXIT_REPAIR_PRICE_MODE', DEFAULT_RESTART_DAY_EXIT_REPAIR_PRICE_MODE) or ''
+    ).strip().upper() or DEFAULT_RESTART_DAY_EXIT_REPAIR_PRICE_MODE
+    normalized['RESTART_DAY_EXIT_REPAIR_DURATION'] = str(
+        normalized.get('RESTART_DAY_EXIT_REPAIR_DURATION', DEFAULT_RESTART_DAY_EXIT_REPAIR_DURATION) or ''
+    ).strip() or DEFAULT_RESTART_DAY_EXIT_REPAIR_DURATION
+    normalized['RESTART_DAY_EXIT_REPAIR_WHAT_TO_SHOW'] = str(
+        normalized.get('RESTART_DAY_EXIT_REPAIR_WHAT_TO_SHOW', DEFAULT_RESTART_DAY_EXIT_REPAIR_WHAT_TO_SHOW) or ''
+    ).strip().upper() or DEFAULT_RESTART_DAY_EXIT_REPAIR_WHAT_TO_SHOW
+    normalized['RESTART_DAY_EXIT_REPAIR_REQUIRE_DAY_TIF'] = bool(
+        normalized.get('RESTART_DAY_EXIT_REPAIR_REQUIRE_DAY_TIF', DEFAULT_RESTART_DAY_EXIT_REPAIR_REQUIRE_DAY_TIF)
+    )
+    normalized['ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH'] = bool(
+        normalized.get('ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH', DEFAULT_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH)
+    )
+    normalized['RESTART_DAY_EXIT_REPAIR_FROM_CASH_MIN_UNITS'] = _safe_float(
+        normalized.get('RESTART_DAY_EXIT_REPAIR_FROM_CASH_MIN_UNITS', DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_MIN_UNITS),
+        DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_MIN_UNITS,
+    )
+    normalized['RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS'] = _safe_float(
+        normalized.get(
+            'RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS',
+            DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS,
+        ),
+        DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS,
+    )
+    normalized['RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY'] = bool(
+        normalized.get(
+            'RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY',
+            DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY,
+        )
+    )
+
+    # Optional environment overrides for bulk operations (e.g., restarting many symbols at once).
+    env_enable = os.getenv('ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR', '').strip().lower()
+    if env_enable in {'1', 'true', 'yes', 'on'}:
+        normalized['ENABLE_RESTART_DAY_EXIT_REPAIR'] = True
+    elif env_enable in {'0', 'false', 'no', 'off'}:
+        normalized['ENABLE_RESTART_DAY_EXIT_REPAIR'] = False
+
+    env_dry_run = os.getenv('ITRADING_RESTART_DAY_EXIT_REPAIR_DRY_RUN', '').strip().lower()
+    if env_dry_run in {'1', 'true', 'yes', 'on'}:
+        normalized['RESTART_DAY_EXIT_REPAIR_DRY_RUN'] = True
+    elif env_dry_run in {'0', 'false', 'no', 'off'}:
+        normalized['RESTART_DAY_EXIT_REPAIR_DRY_RUN'] = False
+
+    env_mode = os.getenv('ITRADING_RESTART_DAY_EXIT_REPAIR_PRICE_MODE', '').strip().upper()
+    if env_mode:
+        normalized['RESTART_DAY_EXIT_REPAIR_PRICE_MODE'] = env_mode
+
+    env_from_cash = os.getenv('ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH', '').strip().lower()
+    if env_from_cash in {'1', 'true', 'yes', 'on'}:
+        normalized['ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH'] = True
+    elif env_from_cash in {'0', 'false', 'no', 'off'}:
+        normalized['ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH'] = False
+
+    env_cash_lookback = os.getenv('ITRADING_RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS', '').strip()
+    if env_cash_lookback:
+        normalized['RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS'] = _safe_float(
+            env_cash_lookback,
+            normalized['RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS'],
+        )
+
+    env_require_expired = os.getenv('ITRADING_RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY', '').strip().lower()
+    if env_require_expired in {'1', 'true', 'yes', 'on'}:
+        normalized['RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY'] = True
+    elif env_require_expired in {'0', 'false', 'no', 'off'}:
+        normalized['RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY'] = False
+
     return normalized
 
 
@@ -500,6 +587,27 @@ def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
+        return default
+
+
+def _ib_request_timeout_seconds(params: Optional[dict] = None) -> float:
+    """Return bounded timeout used for IB async request guards."""
+    source = params or {}
+    env_value = os.getenv('ITRADING_IB_API_REQUEST_TIMEOUT_SECONDS', '').strip()
+    configured = source.get('IB_API_REQUEST_TIMEOUT_SECONDS', env_value or DEFAULT_IB_API_REQUEST_TIMEOUT_SECONDS)
+    timeout_seconds = _safe_float(configured, DEFAULT_IB_API_REQUEST_TIMEOUT_SECONDS)
+    return max(1.0, timeout_seconds)
+
+
+async def _await_with_timeout(awaitable: Any, timeout_seconds: float, op_name: str, default: Any = None):
+    """Await IB request with timeout so one slow request does not block the whole bot."""
+    try:
+        return await asyncio.wait_for(awaitable, timeout=max(1.0, float(timeout_seconds)))
+    except asyncio.TimeoutError:
+        logger.warning(f"[IB-TIMEOUT] {op_name} timed out after {float(timeout_seconds):.1f}s. Continuing.")
+        return default
+    except Exception as exc:
+        logger.warning(f"[IB-REQUEST] {op_name} failed: {exc}")
         return default
 
 
@@ -999,16 +1107,612 @@ def _get_open_orders_for_instrument(forex_pair: str) -> list[dict]:
     return snapshots
 
 
-async def _get_completed_orders_for_instrument(forex_pair: str) -> list[Any]:
+def _get_net_position_for_forex_pair(forex_pair: str) -> Optional[dict]:
+    """Return net position snapshot for one pair or None when flat."""
+    pair = str(forex_pair or '').strip().upper()
+    if len(pair) < 6:
+        return None
+
+    base = pair[:3]
+    quote = pair[3:6]
+    try:
+        raw_positions = ib.positions()
+    except Exception as exc:
+        logger.warning(f"Could not query positions for restart-exit-repair ({pair}): {exc}")
+        return None
+
+    net_qty = 0.0
+    weighted_avg_cost = 0.0
+    total_abs_qty = 0.0
+    matched_contract = None
+
+    for pos in raw_positions or []:
+        contract = getattr(pos, 'contract', None)
+        if not _contract_matches_forex_pair(contract, pair):
+            continue
+
+        qty = _safe_float(getattr(pos, 'position', 0.0), 0.0)
+        if abs(qty) <= 0.0:
+            continue
+
+        avg_cost = _safe_float(getattr(pos, 'avgCost', 0.0), 0.0)
+        net_qty += qty
+        weighted_avg_cost += abs(qty) * avg_cost
+        total_abs_qty += abs(qty)
+        if matched_contract is None:
+            matched_contract = contract
+
+    if abs(net_qty) <= 0.0:
+        return None
+
+    avg_cost = (weighted_avg_cost / total_abs_qty) if total_abs_qty > 0 else 0.0
+    return {
+        'pair': pair,
+        'base': base,
+        'quote': quote,
+        'qty': net_qty,
+        'abs_qty': abs(net_qty),
+        'side': 'LONG' if net_qty > 0 else 'SHORT',
+        'avg_cost': avg_cost,
+        'contract': matched_contract,
+    }
+
+
+def _parse_ib_completed_time_to_utc(raw_value: Any) -> Optional[datetime]:
+    """Parse IB completedTime strings to UTC datetime when possible."""
+    text = str(raw_value or '').strip()
+    if not text:
+        return None
+
+    try:
+        parsed = pd.to_datetime(text, utc=True, errors='coerce')
+        if parsed is None or pd.isna(parsed):
+            return None
+        return parsed.to_pydatetime()
+    except Exception:
+        return None
+
+
+def _extract_expired_day_repair_hint(
+    completed_orders: list[Any],
+    lookback_hours: float,
+    require_expired_day: bool,
+) -> Optional[dict]:
+    """Find the freshest DAY child exit order that expired near session boundary.
+
+    Returns side/qty hint for reconstructing exits when broker FX positions are netted to cash.
+    """
+    if not completed_orders:
+        return None
+
+    now_utc = datetime.now(timezone.utc)
+    best: Optional[dict] = None
+
+    # Track rejection reasons for troubleshooting when hint is not found.
+    reject_counts = {
+        'shape': 0,
+        'type_or_action': 0,
+        'tif': 0,
+        'qty': 0,
+        'parent': 0,
+        'status': 0,
+        'expired_flag': 0,
+        'lookback': 0,
+    }
+
+    for item in completed_orders:
+        order = getattr(item, 'order', None)
+        # ib_async completed-order snapshots may expose either `orderState`
+        # (callback shape) or `orderStatus` (Trade shape).
+        order_state = getattr(item, 'orderState', None) or getattr(item, 'orderStatus', None)
+        if order is None:
+            reject_counts['shape'] += 1
+            continue
+
+        order_type = str(getattr(order, 'orderType', '') or '').upper()
+        action = str(getattr(order, 'action', '') or '').upper()
+        tif = str(getattr(order, 'tif', '') or '').upper()
+        qty = _safe_float(getattr(order, 'totalQuantity', 0.0), 0.0)
+        parent_perm_id = _safe_int(getattr(order, 'parentPermId', 0), 0)
+        parent_id = _safe_int(getattr(order, 'parentId', 0), 0)
+        oca_group = str(getattr(order, 'ocaGroup', '') or '').strip().upper()
+        status = str(getattr(order_state, 'status', '') or '').upper()
+        completed_status = str(getattr(order_state, 'completedStatus', '') or '')
+        completed_time_raw = getattr(order_state, 'completedTime', None)
+
+        # Some wrappers return status/completed fields on the Trade root for completed snapshots.
+        if not status:
+            status = str(getattr(item, 'status', '') or '').upper()
+        if not completed_status:
+            completed_status = str(getattr(item, 'completedStatus', '') or '')
+        if completed_time_raw is None:
+            completed_time_raw = getattr(item, 'completedTime', None)
+
+        # Some completed-order snapshots return qty=0 and only provide "Filled Size: N" in text.
+        if qty <= 0:
+            try:
+                import re
+                m = re.search(r'Filled\s+Size\s*:\s*([0-9]+(?:\.[0-9]+)?)', completed_status, re.IGNORECASE)
+                if m:
+                    qty = _safe_float(m.group(1), 0.0)
+            except Exception:
+                pass
+
+        if order_type not in {'LMT', 'STP'}:
+            reject_counts['type_or_action'] += 1
+            continue
+        if action not in {'BUY', 'SELL'}:
+            reject_counts['type_or_action'] += 1
+            continue
+        if tif != 'DAY':
+            reject_counts['tif'] += 1
+            continue
+        if qty <= 0:
+            reject_counts['qty'] += 1
+            continue
+        # Repair-created exits are OCA siblings with parentId=0 by design.
+        if parent_perm_id <= 0 and parent_id <= 0 and not oca_group.startswith('EXIT_REPAIR_'):
+            reject_counts['parent'] += 1
+            continue
+        normalized_status = status.replace('_', '')
+        if normalized_status not in {'CANCELLED', 'INACTIVE', 'APICANCELLED', 'PRECANCELLED'}:
+            reject_counts['status'] += 1
+            continue
+        if require_expired_day and 'EXPIRED' not in completed_status.upper():
+            reject_counts['expired_flag'] += 1
+            continue
+
+        completed_time = _parse_ib_completed_time_to_utc(completed_time_raw)
+        if completed_time is not None:
+            hours_old = (now_utc - completed_time).total_seconds() / 3600.0
+            if hours_old > max(lookback_hours, 0.1):
+                reject_counts['lookback'] += 1
+                continue
+        else:
+            completed_time = now_utc
+
+        candidate = {
+            'exit_action': action,
+            'qty': qty,
+            'completed_time': completed_time,
+            'order_type': order_type,
+            'parent_perm_id': parent_perm_id,
+            'parent_id': parent_id,
+            'status': status,
+            'completed_status': completed_status,
+        }
+        if best is None or candidate['completed_time'] > best['completed_time']:
+            best = candidate
+
+    if best is None and completed_orders:
+        logger.info(
+            "[EXIT-REPAIR] cash-hint diagnostics | "
+            f"rows={len(completed_orders)} rejected={reject_counts}"
+        )
+
+    return best
+
+
+async def _get_cash_based_position_for_forex_pair(forex_pair: str, params: dict) -> Optional[dict]:
+    """Infer a synthetic net position from FX cash balances + recent expired DAY exits."""
+    if not bool(params.get('ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH', DEFAULT_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH)):
+        return None
+
+    pair = str(forex_pair or '').strip().upper()
+    if len(pair) < 6:
+        return None
+
+    base = pair[:3]
+    quote = pair[3:6]
+    min_units = max(_safe_float(
+        params.get('RESTART_DAY_EXIT_REPAIR_FROM_CASH_MIN_UNITS', DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_MIN_UNITS),
+        DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_MIN_UNITS,
+    ), 0.0)
+    lookback_hours = _safe_float(
+        params.get(
+            'RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS',
+            DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS,
+        ),
+        DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS,
+    )
+    require_expired_day = bool(
+        params.get(
+            'RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY',
+            DEFAULT_RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY,
+        )
+    )
+
+    adapter = _strategy_ib_connection()
+    if adapter is None or not adapter.connected:
+        return None
+
+    cash_balances = adapter.get_cash_balances()
+    if not cash_balances:
+        logger.info(f"[EXIT-REPAIR] {pair}: cash-balance fallback enabled, but no cash balances were returned.")
+        return None
+
+    completed_orders = await _get_completed_orders_for_instrument(pair, params=params)
+    hint = _extract_expired_day_repair_hint(completed_orders, lookback_hours, require_expired_day)
+    if hint is None:
+        logger.info(
+            f"[EXIT-REPAIR] {pair}: cash-balance fallback found no recent DAY expired child exits "
+            f"(lookback_hours={lookback_hours:.1f}).")
+        return None
+
+    base_cash = _safe_float(cash_balances.get(base, 0.0), 0.0)
+    quote_cash = _safe_float(cash_balances.get(quote, 0.0), 0.0)
+    strategy_params = dict((params or {}).get('STRATEGY_PARAMS') or {})
+    account_currency = str(
+        params.get('ACCOUNT_CURRENCY')
+        or strategy_params.get('account_currency')
+        or 'USD'
+    ).strip().upper()
+    inferred_side = 'LONG' if hint['exit_action'] == 'SELL' else 'SHORT'
+
+    # For USD-base pairs (e.g., USDCAD, USDCHF), base cash can represent global account cash
+    # and is not instrument-specific; prefer completed-order hint size in that case.
+    if base == account_currency:
+        signed_qty = hint['qty'] if inferred_side == 'LONG' else -hint['qty']
+        qty_source = 'hint_qty'
+    else:
+        signed_qty = abs(base_cash) if inferred_side == 'LONG' else -abs(base_cash)
+        qty_source = 'base_cash'
+
+    if abs(signed_qty) < min_units:
+        signed_qty = hint['qty'] if inferred_side == 'LONG' else -hint['qty']
+
+    # IB FX repair orders do not accept fractional unit quantities.
+    signed_qty = float(int(abs(signed_qty))) if signed_qty >= 0 else -float(int(abs(signed_qty)))
+
+    if abs(signed_qty) < min_units:
+        logger.info(
+            f"[EXIT-REPAIR] {pair}: inferred qty below threshold after cash+hint merge "
+            f"(qty={abs(signed_qty):.2f}, min_units={min_units:.2f}).")
+        return None
+
+    avg_cost = 0.0
+    if abs(base_cash) > 0 and abs(quote_cash) > 0:
+        avg_cost = abs(quote_cash) / max(abs(base_cash), 1e-9)
+
+    logger.info(
+        f"[EXIT-REPAIR] {pair}: inferred from cash fallback | side={inferred_side} qty={abs(signed_qty):.0f} "
+        f"base_cash={base_cash:.2f} {base} quote_cash={quote_cash:.2f} {quote} qty_source={qty_source} "
+        f"hint_parent_perm_id={hint['parent_perm_id']}"
+    )
+
+    return {
+        'pair': pair,
+        'base': base,
+        'quote': quote,
+        'qty': signed_qty,
+        'abs_qty': abs(signed_qty),
+        'side': inferred_side,
+        'avg_cost': avg_cost,
+        'contract': None,
+        'source': 'cash_fallback',
+    }
+
+
+def _analyze_existing_exit_orders(open_orders: list[dict], exit_action: str) -> dict:
+    """Inspect active open orders and detect if LMT/STP protection already exists."""
+    exit_action = str(exit_action or '').upper()
+    has_lmt = False
+    has_stp = False
+    lmt_price = None
+    stp_price = None
+
+    for item in open_orders or []:
+        action = str(item.get('action', '') or '').upper()
+        order_type = str(item.get('order_type', '') or '').upper()
+        remaining = _safe_float(item.get('remaining', 0.0), 0.0)
+        if action != exit_action or remaining <= 0:
+            continue
+
+        if order_type == 'LMT':
+            has_lmt = True
+            price = _safe_float(item.get('lmt_price', 0.0), 0.0)
+            if price > 0:
+                lmt_price = price
+        elif order_type == 'STP':
+            has_stp = True
+            price = _safe_float(item.get('aux_price', 0.0), 0.0)
+            if price > 0:
+                stp_price = price
+
+    return {
+        'has_lmt': has_lmt,
+        'has_stp': has_stp,
+        'lmt_price': lmt_price,
+        'stp_price': stp_price,
+    }
+
+
+def _compute_atr_from_df(df: pd.DataFrame, length: int) -> float:
+    """Compute ATR from OHLC data (same definition used by strategy: simple mean TR)."""
+    if df is None or df.empty:
+        return 0.0
+    needed = max(int(length or 10) + 1, 3)
+    if len(df) < needed:
+        return 0.0
+
+    tail = df[['high', 'low', 'close']].tail(needed).copy()
+    high = tail['high']
+    low = tail['low']
+    close_prev = tail['close'].shift(1)
+    tr = pd.concat([
+        (high - low).abs(),
+        (high - close_prev).abs(),
+        (low - close_prev).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.dropna().tail(int(length or 10)).mean()
+    return _safe_float(atr, 0.0)
+
+
+def _compute_repair_exit_prices(
+    *,
+    current_price: float,
+    atr_now: float,
+    side: str,
+    strategy_params: dict,
+    price_precision: int,
+) -> tuple[float, float]:
+    """Return (take_profit_price, stop_loss_price) for exit-order repair."""
+    side = str(side or '').upper()
+    pip_value = _safe_float(strategy_params.get('forex_pip_value', 0.0001), 0.0001)
+    min_distance = max(pip_value * 2.0, 1e-8)
+
+    if atr_now <= 0:
+        # Fallback when historical ATR is unavailable: conservative 20 pip envelope.
+        atr_now = pip_value * 20.0
+
+    if side == 'LONG':
+        sl_mult = _safe_float(strategy_params.get('long_atr_sl_multiplier', 2.5), 2.5)
+        tp_mult = _safe_float(strategy_params.get('long_atr_tp_multiplier', 6.5), 6.5)
+        stop_price = current_price - atr_now * sl_mult
+        take_price = current_price + atr_now * tp_mult
+        if stop_price >= current_price:
+            stop_price = current_price - min_distance
+        if take_price <= current_price:
+            take_price = current_price + min_distance
+    else:
+        sl_mult = _safe_float(strategy_params.get('short_atr_sl_multiplier', 2.5), 2.5)
+        tp_mult = _safe_float(strategy_params.get('short_atr_tp_multiplier', 6.5), 6.5)
+        stop_price = current_price + atr_now * sl_mult
+        take_price = current_price - atr_now * tp_mult
+        if stop_price <= current_price:
+            stop_price = current_price + min_distance
+        if take_price >= current_price:
+            take_price = current_price - min_distance
+
+    stop_price = round(stop_price, int(price_precision))
+    take_price = round(take_price, int(price_precision))
+
+    # Post-rounding safety.
+    if side == 'LONG':
+        if stop_price >= current_price:
+            stop_price = round(current_price - min_distance, int(price_precision))
+        if take_price <= current_price:
+            take_price = round(current_price + min_distance, int(price_precision))
+    else:
+        if stop_price <= current_price:
+            stop_price = round(current_price + min_distance, int(price_precision))
+        if take_price >= current_price:
+            take_price = round(current_price - min_distance, int(price_precision))
+
+    return take_price, stop_price
+
+
+async def _fetch_restart_repair_market_context(contract: Any, params: dict) -> tuple[float, float]:
+    """Fetch latest close + ATR for restart exit repair pricing."""
+    strategy_params = dict((params or {}).get('STRATEGY_PARAMS') or {})
+    atr_length = _safe_int(strategy_params.get('atr_length', 10), 10)
+    duration = str(params.get('RESTART_DAY_EXIT_REPAIR_DURATION', DEFAULT_RESTART_DAY_EXIT_REPAIR_DURATION) or '').strip()
+    if not duration:
+        duration = DEFAULT_RESTART_DAY_EXIT_REPAIR_DURATION
+    what_to_show = str(params.get('RESTART_DAY_EXIT_REPAIR_WHAT_TO_SHOW', DEFAULT_RESTART_DAY_EXIT_REPAIR_WHAT_TO_SHOW) or '').strip().upper()
+    if not what_to_show:
+        what_to_show = DEFAULT_RESTART_DAY_EXIT_REPAIR_WHAT_TO_SHOW
+    bar_size = str(params.get('BAR_SIZE', '5 mins') or '5 mins')
+    use_rth = bool(params.get('IB_USE_RTH_HISTORICAL', False))
+
+    timeout_seconds = _ib_request_timeout_seconds(params)
+    bars = await _await_with_timeout(
+        ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime='',
+            durationStr=duration,
+            barSizeSetting=bar_size,
+            whatToShow=what_to_show,
+            useRTH=use_rth,
+        ),
+        timeout_seconds,
+        f"reqHistoricalDataAsync[{getattr(contract, 'symbol', '')}/{getattr(contract, 'currency', '')}]",
+        default=[],
+    )
+    df = _normalize_ib_bars_df(util.df(bars), 'restart-exit-repair') if bars else pd.DataFrame()
+    if df is None or df.empty:
+        return 0.0, 0.0
+
+    latest_close = _safe_float(df['close'].iloc[-1], 0.0) if 'close' in df.columns else 0.0
+    atr_now = _compute_atr_from_df(df, atr_length)
+    return latest_close, atr_now
+
+
+async def _repair_expired_day_exit_orders_on_restart(params: dict) -> None:
+    """Startup plugin: recreate missing DAY LMT/STP exits for an already-open net FX position."""
+    enabled = bool(params.get('ENABLE_RESTART_DAY_EXIT_REPAIR', DEFAULT_ENABLE_RESTART_DAY_EXIT_REPAIR))
+    instrument = str(params.get('FOREX_INSTRUMENT', DEFAULT_FOREX_INSTRUMENT)).strip().upper()
+    if len(instrument) < 6:
+        logger.warning(f"[EXIT-REPAIR] Invalid FOREX_INSTRUMENT '{instrument}'. Skipping.")
+        return
+
+    if not enabled:
+        # Operator guardrail: make the reason explicit when bot startup skips repair.
+        position = _get_net_position_for_forex_pair(instrument)
+        if position is not None:
+            exit_action = 'SELL' if position['qty'] > 0 else 'BUY'
+            existing = _analyze_existing_exit_orders(_get_open_orders_for_instrument(instrument), exit_action)
+            if not (existing['has_lmt'] and existing['has_stp']):
+                logger.warning(
+                    f"[EXIT-REPAIR] Disabled for {instrument} while an open {position['side']} position exists "
+                    f"(qty={position['abs_qty']:.0f}) and protective exits are missing "
+                    f"(has_lmt={existing['has_lmt']} has_stp={existing['has_stp']}). "
+                    "Enable with config key ENABLE_RESTART_DAY_EXIT_REPAIR=true or env "
+                    "ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR=true."
+                )
+        return
+
+    require_day_tif = bool(params.get('RESTART_DAY_EXIT_REPAIR_REQUIRE_DAY_TIF', DEFAULT_RESTART_DAY_EXIT_REPAIR_REQUIRE_DAY_TIF))
+    configured_exit_tif = str(params.get('IB_BRACKET_EXIT_TIF', DEFAULT_IB_BRACKET_EXIT_TIF) or '').strip().upper() or DEFAULT_IB_BRACKET_EXIT_TIF
+    if require_day_tif and configured_exit_tif != 'DAY':
+        logger.info(
+            f"[EXIT-REPAIR] Skipped for {instrument}: RESTART_DAY_EXIT_REPAIR_REQUIRE_DAY_TIF=true "
+            f"and IB_BRACKET_EXIT_TIF={configured_exit_tif}.")
+        return
+
+    position = _get_net_position_for_forex_pair(instrument)
+    if position is None:
+        position = await _get_cash_based_position_for_forex_pair(instrument, params)
+    if position is None:
+        logger.info(f"[EXIT-REPAIR] {instrument}: no open net position. Nothing to repair.")
+        return
+
+    exit_action = 'SELL' if position['qty'] > 0 else 'BUY'
+    open_orders = _get_open_orders_for_instrument(instrument)
+    existing = _analyze_existing_exit_orders(open_orders, exit_action)
+
+    if existing['has_lmt'] and existing['has_stp']:
+        logger.info(
+            f"[EXIT-REPAIR] {instrument}: existing {exit_action} LMT/STP exits are already active. No repair needed.")
+        return
+
+    price_mode = str(params.get('RESTART_DAY_EXIT_REPAIR_PRICE_MODE', DEFAULT_RESTART_DAY_EXIT_REPAIR_PRICE_MODE) or '').strip().upper()
+    if price_mode not in {'ATR_MARKET', 'SNAPSHOT'}:
+        price_mode = DEFAULT_RESTART_DAY_EXIT_REPAIR_PRICE_MODE
+
+    strategy_params = dict(params.get('STRATEGY_PARAMS') or {})
+    price_precision = _safe_int(params.get('PRICE_PRECISION', 5), 5)
+
+    contract = Forex(instrument)
+    timeout_seconds = _ib_request_timeout_seconds(params)
+    qualified = await _await_with_timeout(
+        ib.qualifyContractsAsync(contract),
+        timeout_seconds,
+        f"qualifyContractsAsync[{instrument}]",
+        default=None,
+    )
+    if qualified is None:
+        logger.warning(f"[EXIT-REPAIR] {instrument}: contract qualification timed out. Skipping repair.")
+        return
+
+    latest_close = 0.0
+    atr_now = 0.0
+    if price_mode == 'ATR_MARKET':
+        try:
+            latest_close, atr_now = await _fetch_restart_repair_market_context(contract, params)
+        except Exception as exc:
+            logger.warning(f"[EXIT-REPAIR] {instrument}: failed to fetch market context ({exc}). Falling back to avgCost.")
+
+    if latest_close <= 0:
+        latest_close = _safe_float(position.get('avg_cost', 0.0), 0.0)
+    if latest_close <= 0:
+        logger.warning(f"[EXIT-REPAIR] {instrument}: cannot determine current price. Skipping repair.")
+        return
+
+    take_price, stop_price = _compute_repair_exit_prices(
+        current_price=latest_close,
+        atr_now=atr_now,
+        side=position['side'],
+        strategy_params=strategy_params,
+        price_precision=price_precision,
+    )
+
+    dry_run = bool(params.get('RESTART_DAY_EXIT_REPAIR_DRY_RUN', DEFAULT_RESTART_DAY_EXIT_REPAIR_DRY_RUN))
+    exit_tif = str(params.get('IB_BRACKET_EXIT_TIF', 'DAY') or 'DAY').strip().upper() or 'DAY'
+    qty = float(int(max(0.0, _safe_float(position.get('abs_qty', 0.0), 0.0))))
+    if qty < 1.0:
+        logger.warning(f"[EXIT-REPAIR] {instrument}: computed repair quantity is < 1 unit. Skipping repair.")
+        return
+    place_lmt = not existing['has_lmt']
+    place_stp = not existing['has_stp']
+
+    logger.info(
+        f"[EXIT-REPAIR] {instrument}: side={position['side']} qty={qty:.0f} mode={price_mode} "
+        f"latest={latest_close:.5f} atr={atr_now:.6f} -> LMT={take_price:.5f} STP={stop_price:.5f} "
+        f"missing(LMT={place_lmt}, STP={place_stp}) dry_run={dry_run} source={position.get('source', 'position')}")
+
+    if not (place_lmt or place_stp):
+        return
+    if dry_run:
+        return
+
+    oca_group = f"EXIT_REPAIR_{instrument}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+
+    if place_lmt:
+        lmt_order = Order(
+            orderId=ib.client.getReqId(),
+            action=exit_action,
+            orderType='LMT',
+            totalQuantity=qty,
+            lmtPrice=take_price,
+            tif=exit_tif,
+            ocaGroup=oca_group,
+            ocaType=1,
+            transmit=True,
+        )
+        ib.placeOrder(contract, lmt_order)
+        if live_lifecycle_bridge is not None:
+            live_lifecycle_bridge.on_order_status(
+                lmt_order.orderId,
+                'SUBMITTED',
+                action=exit_action,
+                order_type='LMT',
+                tif=exit_tif,
+                quantity=qty,
+                parent_id=0,
+            )
+        logger.info(f"[EXIT-REPAIR] Placed replacement LMT orderId={lmt_order.orderId} price={take_price:.5f}")
+
+    if place_stp:
+        stp_order = Order(
+            orderId=ib.client.getReqId(),
+            action=exit_action,
+            orderType='STP',
+            totalQuantity=qty,
+            auxPrice=stop_price,
+            tif=exit_tif,
+            ocaGroup=oca_group,
+            ocaType=1,
+            transmit=True,
+        )
+        ib.placeOrder(contract, stp_order)
+        if live_lifecycle_bridge is not None:
+            live_lifecycle_bridge.on_order_status(
+                stp_order.orderId,
+                'SUBMITTED',
+                action=exit_action,
+                order_type='STP',
+                tif=exit_tif,
+                quantity=qty,
+                parent_id=0,
+            )
+        logger.info(f"[EXIT-REPAIR] Placed replacement STP orderId={stp_order.orderId} price={stop_price:.5f}")
+
+    _save_snapshot_5_minutes(params=params, open_orders=_get_open_orders_for_instrument(instrument))
+
+
+async def _get_completed_orders_for_instrument(forex_pair: str, params: Optional[dict] = None) -> list[Any]:
     """Fetch completed/terminal IB orders for the requested instrument when supported."""
     if ib is None or not ib.isConnected():
         return []
 
-    try:
-        completed_trades = await ib.reqCompletedOrdersAsync(apiOnly=False)
-    except Exception as exc:
-        logger.warning(f"Could not query IB completed orders for {forex_pair}: {exc}")
-        return []
+    timeout_seconds = _ib_request_timeout_seconds(params)
+    completed_trades = await _await_with_timeout(
+        ib.reqCompletedOrdersAsync(apiOnly=False),
+        timeout_seconds,
+        f"reqCompletedOrdersAsync[{forex_pair}]",
+        default=[],
+    )
 
     filtered: list[Any] = []
     for completed in completed_trades or []:
@@ -1431,7 +2135,7 @@ async def run_strategy_on_live_bar(live_bars):
 
     instrument = str(params.get('FOREX_INSTRUMENT', '')).strip().upper()
     cycle_open_orders = _get_open_orders_for_instrument(instrument)
-    cycle_completed_orders = await _get_completed_orders_for_instrument(instrument)
+    cycle_completed_orders = await _get_completed_orders_for_instrument(instrument, params=params)
     if live_lifecycle_bridge is not None and cycle_completed_orders:
         live_lifecycle_bridge.ingest_completed_orders(cycle_completed_orders, instrument)
 
@@ -1573,7 +2277,15 @@ async def run_strategy_on_live_bar(live_bars):
                 return
 
             contract = Forex(params['FOREX_INSTRUMENT'])
-            await ib.qualifyContractsAsync(contract)
+            qualified_trade = await _await_with_timeout(
+                ib.qualifyContractsAsync(contract),
+                _ib_request_timeout_seconds(params),
+                f"qualifyContractsAsync[{instrument}]-pre-trade",
+                default=None,
+            )
+            if qualified_trade is None:
+                logger.warning(f"Skipping live trade placement: contract qualification timed out for {instrument}.")
+                return
             await execute_live_trade(contract, signal, params)
         else:
             logger.info("No signal generated in this analysis cycle (all conditions not met).")
@@ -1596,14 +2308,33 @@ async def run_historical_analysis(params):
     logger.info(f"--- Running {strategy_label} on historical data (no orders) to warm up... ---")
 
     contract = Forex(params['FOREX_INSTRUMENT'])
-    await ib.qualifyContractsAsync(contract)
+    timeout_seconds = _ib_request_timeout_seconds(params)
+    qualified = await _await_with_timeout(
+        ib.qualifyContractsAsync(contract),
+        timeout_seconds,
+        f"qualifyContractsAsync[{params['FOREX_INSTRUMENT']}]-historical",
+        default=None,
+    )
+    if qualified is None:
+        logger.error(f"❌ Could not qualify historical contract for {params['FOREX_INSTRUMENT']}. Exiting.")
+        return False
 
     logger.info(f"Fetching historical {params['BAR_SIZE']} bars for {params['FOREX_INSTRUMENT']}...")
     use_rth_historical = bool(params.get('IB_USE_RTH_HISTORICAL', False))
     logger.info(f"Historical data request settings: useRTH={use_rth_historical}")
-    bars = await ib.reqHistoricalDataAsync(
-        contract, endDateTime='', durationStr=params['HIST_DURATION'],
-        barSizeSetting=params['BAR_SIZE'], whatToShow='MIDPOINT', useRTH=use_rth_historical)
+    bars = await _await_with_timeout(
+        ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime='',
+            durationStr=params['HIST_DURATION'],
+            barSizeSetting=params['BAR_SIZE'],
+            whatToShow='MIDPOINT',
+            useRTH=use_rth_historical,
+        ),
+        timeout_seconds,
+        f"reqHistoricalDataAsync[{params['FOREX_INSTRUMENT']}]-historical",
+        default=[],
+    )
 
     if not bars:
         logger.error("❌ No historical data received for warm-up. Exiting.")
@@ -1657,6 +2388,14 @@ async def run_bot():
     params = load_params()
     active_strategy_class, active_strategy_label = resolve_strategy_class(params)
     logger.info(f"Using strategy: {active_strategy_label}")
+    logger.info(
+        "Restart DAY exit repair: "
+        f"enabled={bool(params.get('ENABLE_RESTART_DAY_EXIT_REPAIR', DEFAULT_ENABLE_RESTART_DAY_EXIT_REPAIR))} "
+        f"dry_run={bool(params.get('RESTART_DAY_EXIT_REPAIR_DRY_RUN', DEFAULT_RESTART_DAY_EXIT_REPAIR_DRY_RUN))} "
+        f"mode={str(params.get('RESTART_DAY_EXIT_REPAIR_PRICE_MODE', DEFAULT_RESTART_DAY_EXIT_REPAIR_PRICE_MODE)).upper()} "
+        f"from_cash={bool(params.get('ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH', DEFAULT_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH))}"
+    )
+    logger.info(f"IB async request timeout: {_ib_request_timeout_seconds(params):.1f}s")
     instrument = str(params.get('FOREX_INSTRUMENT', DEFAULT_FOREX_INSTRUMENT)).strip().upper() or DEFAULT_FOREX_INSTRUMENT
     _set_logging_instrument(instrument)
     strategy_params = params.get('STRATEGY_PARAMS', {})
@@ -1701,8 +2440,14 @@ async def run_bot():
         ef = ExecutionFilter()
         # Look back up to 7 days so recently closed trades are captured.
         ef.time = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y%m%d-%H:%M:%S')
-        fills = await ib.reqExecutionsAsync(ef)
-        completed_trades = await _get_completed_orders_for_instrument(instrument)
+        timeout_seconds = _ib_request_timeout_seconds(params)
+        fills = await _await_with_timeout(
+            ib.reqExecutionsAsync(ef),
+            timeout_seconds,
+            f"reqExecutionsAsync[{instrument}]",
+            default=[],
+        )
+        completed_trades = await _get_completed_orders_for_instrument(instrument, params=params)
         completed_added = 0
         if completed_trades:
             completed_added = live_lifecycle_bridge.ingest_completed_orders(completed_trades, instrument)
@@ -1727,6 +2472,14 @@ async def run_bot():
     except Exception as exc:
         logger.warning(f"[LIVE-BRIDGE] Startup reconciliation failed (non-fatal): {exc}")
 
+    # -----------------------------------------------------------------
+    # 3. Optional startup plugin: repair expired DAY exits for open positions.
+    # -----------------------------------------------------------------
+    try:
+        await _repair_expired_day_exit_orders_on_restart(params)
+    except Exception as exc:
+        logger.warning(f"[EXIT-REPAIR] Startup exit-repair failed (non-fatal): {exc}")
+
     if not await run_historical_analysis(params):
         return
 
@@ -1741,7 +2494,15 @@ async def run_bot():
 
     logger.info("--- Transitioning to LIVE MODE. Awaiting new 5-second bar data... ---")
     contract = Forex(params['FOREX_INSTRUMENT'])
-    await ib.qualifyContractsAsync(contract)
+    qualified_live = await _await_with_timeout(
+        ib.qualifyContractsAsync(contract),
+        _ib_request_timeout_seconds(params),
+        f"qualifyContractsAsync[{params['FOREX_INSTRUMENT']}]-live",
+        default=None,
+    )
+    if qualified_live is None:
+        logger.error(f"Failed to qualify live contract for {params['FOREX_INSTRUMENT']}. Exiting run loop.")
+        return
     logger.info(
         f"Qualified live contract: {getattr(contract, 'symbol', '')}/{getattr(contract, 'currency', '')} "
         f"secType={getattr(contract, 'secType', '')} exchange={getattr(contract, 'exchange', '')}")
