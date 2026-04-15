@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Optional
 from datetime import datetime, timedelta, timezone
@@ -216,6 +217,9 @@ active_forex_instrument = os.getenv('ITRADING_FOREX_INSTRUMENT', '').strip().upp
 last_strategy_broker_snapshot: Optional[dict] = None
 last_strategy_instrument_nlv: Optional[dict] = None
 last_loaded_params: Optional[dict] = None
+bars_report_file = None
+bars_report_path: Optional[Path] = None
+bars_report_lock = threading.Lock()
 
 
 class StrategyIBConnectionAdapter:
@@ -297,10 +301,64 @@ def _set_logging_instrument(instrument: str | None):
 
 def _console_print_with_instrument(tag: str, message: str, instrument: str | None = None):
     prefix_instrument = str(instrument or active_forex_instrument or '').strip().upper()
+    line = ""
     if prefix_instrument:
-        print(f"[{prefix_instrument}][{tag}] {message}")
+        line = f"[{prefix_instrument}][{tag}] {message}"
     else:
-        print(f"[{tag}] {message}")
+        line = f"[{tag}] {message}"
+    print(line)
+
+    if tag in ('Current Bar', 'Live Tick'):
+        _write_bars_report_line(line)
+
+
+def _bars_report_path_for_instrument(instrument: str) -> Path:
+    report_root = Path(__file__).resolve().parent.parent / 'reports'
+    safe_instrument = str(instrument or 'UNKNOWN').strip().upper() or 'UNKNOWN'
+    report_dir = report_root / safe_instrument
+    report_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return report_dir / f"{safe_instrument}_bars_{timestamp}.txt"
+
+
+def _init_bars_report(instrument: str):
+    global bars_report_file, bars_report_path
+    _close_bars_report()
+    try:
+        bars_report_path = _bars_report_path_for_instrument(instrument)
+        bars_report_file = open(bars_report_path, 'w', encoding='utf-8', buffering=1)
+        logger.info(f"📊 BARS REPORT: {bars_report_path}")
+    except Exception as exc:
+        logger.warning(f"Bars report initialization failed for {instrument}: {exc}")
+        bars_report_file = None
+        bars_report_path = None
+
+
+def _write_bars_report_line(line: str):
+    handle = bars_report_file
+    if handle is None:
+        return
+    try:
+        with bars_report_lock:
+            handle.write(f"{line}\n")
+    except Exception as exc:
+        logger.warning(f"Bars report write failed: {exc}")
+
+
+def _close_bars_report():
+    global bars_report_file, bars_report_path
+    handle = bars_report_file
+    if handle is None:
+        return
+    try:
+        with bars_report_lock:
+            handle.flush()
+            handle.close()
+    except Exception as exc:
+        logger.warning(f"Bars report close failed: {exc}")
+    finally:
+        bars_report_file = None
+        bars_report_path = None
 
 
 def _default_strategy_class_name_for_instrument(instrument: str) -> str:
@@ -2189,6 +2247,7 @@ async def run_strategy_on_live_bar(live_bars):
         active_strategy_class,
         live_trading=True,
         signal_queue=signal_queue,
+        bars_report_callback=_write_bars_report_line,
         live_cutoff_dt=last_live_processed_dt,
         live_state_in=live_strategy_state,
         live_snapshot_in=cycle_snapshot_document,
@@ -2353,6 +2412,7 @@ async def run_historical_analysis(params):
     cerebro.addstrategy(
         active_strategy_class,
         live_trading=False,
+        bars_report_callback=_write_bars_report_line,
         ib_connection=_strategy_ib_connection(),
         **strategy_params
     )
@@ -2398,6 +2458,7 @@ async def run_bot():
     logger.info(f"IB async request timeout: {_ib_request_timeout_seconds(params):.1f}s")
     instrument = str(params.get('FOREX_INSTRUMENT', DEFAULT_FOREX_INSTRUMENT)).strip().upper() or DEFAULT_FOREX_INSTRUMENT
     _set_logging_instrument(instrument)
+    _init_bars_report(instrument)
     strategy_params = params.get('STRATEGY_PARAMS', {})
     pip_value = strategy_params.get('forex_pip_value', 0.0001)
 
@@ -2592,6 +2653,7 @@ async def main():
     except Exception as e:
         logger.error(f"An error occurred during bot operation: {e}", exc_info=True)
     finally:
+        _close_bars_report()
         logger.info("Initiating graceful shutdown...")
         tasks_to_cancel = list(active_tasks)
         if tasks_to_cancel:

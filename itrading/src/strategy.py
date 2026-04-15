@@ -419,6 +419,7 @@ class ITradingStrategy(bt.Strategy):
         print_signals=True,
         print_summary=False,         # Print === ITRADING SUMMARY === block at strategy stop (set True to enable)
         export_trade_reports=True,
+        bars_report_callback=None,
         lifecycle_logging=False,  # Compact lifecycle logger (init/prenext/next1/notify_order/notify_trade/stop)
         dataname=None,
         ib_connection=None,  # Interactive Brokers connection for live position monitoring
@@ -1126,7 +1127,15 @@ class ITradingStrategy(bt.Strategy):
         self.successful_entry_count += 1
 
     def _tagged_print(self, tag, message):
-        print(f"{self._instrument_log_prefix()}[{tag}] {message}")
+        line = f"{self._instrument_log_prefix()}[{tag}] {message}"
+        print(line)
+
+        # Keep bars report focused: only Current Bar lines from strategy output.
+        if tag == 'Current Bar' and callable(self.p.bars_report_callback):
+            try:
+                self.p.bars_report_callback(line)
+            except Exception:
+                pass
 
     def _lifecycle_debug(self, message):
         """Emit compact diagnostic logs when lifecycle logging is enabled."""
