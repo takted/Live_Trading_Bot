@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import asyncio
 import pytz
 def _get_eod_cutoff_dt(instrument: str, now_utc: datetime) -> datetime:
@@ -58,7 +59,6 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Optional
-from datetime import datetime, timedelta, timezone
 
 import backtrader as bt
 import pandas as pd
@@ -127,8 +127,6 @@ DEFAULT_PORTFOLIO_POLICY = {
     'default_max_simultaneous_positions_per_symbol': 1,
     'instrument_allocations_usd': {},
     'instrument_max_positions': {},
-# Add missing import for datetime
-import datetime
 }
 STRATEGY_CLASS_BY_INSTRUMENT = {
     'AUDUSD': 'ITradingStrategyAUDUSD',

@@ -314,6 +314,9 @@ class ITradingStrategy(bt.Strategy):
         long_use_pullback_entry=True,
         short_use_pullback_entry=True,
 
+        # === EOD FLATTENING ===
+        enable_eod_flatten=True,
+
         # === TECHNICAL INDICATORS ===
         ema_fast_length=10,
         ema_medium_length=20,
