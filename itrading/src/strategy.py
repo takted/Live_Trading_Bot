@@ -4682,6 +4682,7 @@ class ITradingStrategyGBPUSD(ITradingStrategy):
         contract_size=100000,
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
+        enable_short_trades=True,  # Enable both LONG and SHORT trading by default
     )
 
     def _calculate_exit_levels(self, signal_direction, atr_now, bar_low, bar_high, entry_price):

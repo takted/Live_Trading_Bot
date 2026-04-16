@@ -1360,20 +1360,23 @@ async def _manage_gbpusd_dynamic_exits(params: dict, current_price: float, curre
     if enable_trailing and trail_trigger_pips > 0 and trail_distance_pips > 0:
         trailing_status = 'armed' if move_pips >= trail_trigger_pips else 'waiting'
 
-    def _emit_exit_diag(time_status: str, break_even_state: str, trailing_state: str, candidate_stop_price: Optional[float] = None):
+    def _emit_exit_diag(time_status: str, break_even_state: str, trailing_state: str, candidate_stop_price: Optional[float] = None, action_time: str = '', action_be: str = '', action_trail: str = ''):
         candidate_text = f"{candidate_stop_price:.5f}" if candidate_stop_price is not None else '-'
         stop_text = f"{current_stop:.5f}" if current_stop > 0 else '-'
-        logger.info(
-            f"[GBPUSD-EXIT] cycle | trade={trade.trade_id} | side={'LONG' if is_long else 'SHORT'} "
-            f"| entry={entry_price:.5f} current={current_price:.5f} move_pips={move_pips:.1f} "
-            f"| bars_open={elapsed_bars} | stop={stop_text} candidate={candidate_text} "
-            f"| time_exit={time_status}({elapsed_bars}/{time_exit_bars}) "
-            f"| break_even={break_even_state}(trigger={be_trigger_pips:.1f}, plus={be_plus_pips:.1f}) "
-            f"| trailing={trailing_state}(trigger={trail_trigger_pips:.1f}, dist={trail_distance_pips:.1f})")
+        logger.info(f"\n[GBPUSD-EXIT DIAGNOSTIC] Trade={trade.trade_id} | Side={'LONG' if is_long else 'SHORT'} | Entry={entry_price:.5f} | Current={current_price:.5f} | Move_pips={move_pips:.1f} | Bars_open={elapsed_bars} | Stop={stop_text} | Candidate={candidate_text}")
+        logger.info("  Exit Type      | Trigger Condition (actual/required)         | State      | Action")
+        logger.info("  --------------|---------------------------------------------|------------|------------------------------")
+        # Time Exit
+        logger.info(f"  Time Exit      | bars_open={elapsed_bars}/{time_exit_bars}                     | {time_status:<10} | {action_time or 'no action'}")
+        # Break-Even
+        logger.info(f"  Break-Even     | move_pips={move_pips:.1f}/{be_trigger_pips:.1f}, plus={be_plus_pips:.1f} | {break_even_state:<10} | {action_be or 'no action'}")
+        # Trailing
+        logger.info(f"  Trailing Stop  | move_pips={move_pips:.1f}/{trail_trigger_pips:.1f}, dist={trail_distance_pips:.1f} | {trailing_state:<10} | {action_trail or 'no action'}")
+        logger.info("")
 
     if enable_time_exit and entry_dt is not None:
         if time_exit_bars > 0 and elapsed_bars >= time_exit_bars:
-            _emit_exit_diag('fired', break_even_status, trailing_status)
+            _emit_exit_diag('fired', break_even_status, trailing_status, action_time='market exit submitted')
             if int(getattr(trade, 'take_profit_order_id', 0) or 0) > 0:
                 _cancel_open_order_for_instrument(instrument, int(trade.take_profit_order_id))
             if int(getattr(trade, 'stop_loss_order_id', 0) or 0) > 0:
@@ -1437,12 +1440,12 @@ async def _manage_gbpusd_dynamic_exits(params: dict, current_price: float, curre
         improved = current_stop <= 0 or candidate_stop < (current_stop - step_price)
 
     if not improved:
-        _emit_exit_diag(time_exit_status, break_even_status, trailing_status, candidate_stop)
+        _emit_exit_diag(time_exit_status, break_even_status, trailing_status, candidate_stop, action_be='not improved', action_trail='not improved')
         return False
 
     new_stop_price = round(candidate_stop, price_precision)
     if current_stop > 0 and abs(new_stop_price - current_stop) < min_distance:
-        _emit_exit_diag(time_exit_status, break_even_status, trailing_status, new_stop_price)
+        _emit_exit_diag(time_exit_status, break_even_status, trailing_status, new_stop_price, action_be='min distance not met', action_trail='min distance not met')
         return False
 
     if _replace_open_stop_order(instrument, int(trade.stop_loss_order_id), new_stop_price):
@@ -1451,12 +1454,12 @@ async def _manage_gbpusd_dynamic_exits(params: dict, current_price: float, curre
         fired_break_even = break_even_status == 'armed' and (not enable_trailing or move_pips < trail_trigger_pips)
         break_even_diag = 'fired' if fired_break_even else break_even_status
         trailing_diag = 'fired' if trailing_status == 'armed' and move_pips >= trail_trigger_pips else trailing_status
-        _emit_exit_diag(time_exit_status, break_even_diag, trailing_diag, new_stop_price)
+        _emit_exit_diag(time_exit_status, break_even_diag, trailing_diag, new_stop_price, action_be='stop updated' if break_even_diag=='fired' else '', action_trail='stop updated' if trailing_diag=='fired' else '')
         logger.info(
             f"[GBPUSD-EXIT] Stop updated for {trade.trade_id} | move_pips={move_pips:.1f} "
             f"old={current_stop:.5f} new={new_stop_price:.5f} current={current_price:.5f}")
     else:
-        _emit_exit_diag(time_exit_status, break_even_status, trailing_status, new_stop_price)
+        _emit_exit_diag(time_exit_status, break_even_status, trailing_status, new_stop_price, action_be='stop update failed', action_trail='stop update failed')
 
     return False
 

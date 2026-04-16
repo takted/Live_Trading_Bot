@@ -219,7 +219,7 @@ LONG_ANGLE_SCALE_FACTOR = 10000.0           # Scaling factor for angle calculati
 # === LONG PULLBACK ENTRY SYSTEM ===
 LONG_USE_PULLBACK_ENTRY = True             # Enable 3-phase pullback entry system for long entries
 LONG_PULLBACK_MAX_CANDLES = 2              # Max red candles in pullback for long entries (1-3 recommended)
-LONG_ENTRY_WINDOW_PERIODS = 1             # Bars to wait for breakout after pullback (long entries)
+LONG_ENTRY_WINDOW_PERIODS = 5             # Bars to wait for breakout after pullback (long entries)
 
 # ===============================================================
 # * VOLATILITY EXPANSION CHANNEL - KEY TIMING PARAMETERS *

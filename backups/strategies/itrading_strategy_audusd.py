@@ -292,12 +292,15 @@ SHORT_USE_EMA_ABOVE_PRICE_FILTER = False    # NEW: Require fast, medium & slow E
 # === LONG PULLBACK ENTRY SYSTEM ===
 LONG_USE_PULLBACK_ENTRY = True             # Enable 3-phase pullback entry system for long entries
 LONG_PULLBACK_MAX_CANDLES = 2              # Max red candles in pullback for long entries (1-3 recommended)
-LONG_ENTRY_WINDOW_PERIODS = 1             # Bars to wait for breakout after pullback (long entries)
+LONG_ENTRY_WINDOW_PERIODS = 3             # Bars to wait for breakout after pullback (long entries) [was 1, now 3 for robustness]
 
 # === SHORT PULLBACK ENTRY SYSTEM ===
 SHORT_USE_PULLBACK_ENTRY = True            # Enable 3-phase pullback entry system for short entries
 SHORT_PULLBACK_MAX_CANDLES = 2             # Max green candles in pullback for short entries (1-3 recommended)
 SHORT_ENTRY_WINDOW_PERIODS = 7            # Bars to wait for breakdown after pullback (short entries)
+
+# === TIME EXIT MANAGEMENT ===
+TIME_EXIT_BARS = 24  # Exit after 24 bars (2 hours on 5m chart, matches GBPUSD)
 
 # ===============================================================
 # ⚡ VOLATILITY EXPANSION CHANNEL - KEY TIMING PARAMETERS ⚡
@@ -308,7 +311,6 @@ USE_WINDOW_TIME_OFFSET = False              # NEW: Enable/disable the time delay
 # 🔧 WINDOW_OFFSET_MULTIPLIER: Controls delay between pullback and window opening (only if USE_WINDOW_TIME_OFFSET=True)
 WINDOW_OFFSET_MULTIPLIER = 0.5             # Window delay multiplier (0.5=fast, 1.0=standard, 2.0=conservative)
                                           # Formula: window_start = current_bar + (pullback_count × this_value)
-                                          # 🔬 EXPERIMENT: Try 0.5 for aggressive, 1.5 for conservative entries
 # 🔧 WINDOW_PRICE_OFFSET_MULTIPLIER: Controls the price expansion of the two-sided channel
 WINDOW_PRICE_OFFSET_MULTIPLIER = 0.001      # NEW: Price expansion multiplier (0.5 = 50% of candle range)
                                           # Formula: channel_width = candle_range × this_value
@@ -2126,8 +2128,6 @@ class ITradingStrategy(bt.Strategy):
                                         print(f"ATR DECREMENT Filter: LONG pullback rejected - ATR change {atr_change:+.6f} outside range [{self.p.long_atr_decrement_min_threshold:.6f}, {self.p.long_atr_decrement_max_threshold:.6f}]")
                                     self._reset_pullback_state()
                                     return False
-                            # If decrement filter is DISABLED, allow all decrements (pass through)
-                        
                         # Rule 3: If ATR change is exactly zero, allow it (no volatility change)
                     
                     # Transition to Phase 3: Start entry window countdown
@@ -2305,8 +2305,6 @@ class ITradingStrategy(bt.Strategy):
                                         print(f"ATR INCREMENT Filter: SHORT pullback rejected - ATR increment {atr_change:+.6f} outside range [{self.p.short_atr_increment_min_threshold:.6f}, {self.p.short_atr_increment_max_threshold:.6f}]")
                                     self._reset_pullback_state()
                                     return False
-                            # If increment filter is DISABLED, allow all increments for SHORT (different strategy)
-                        
                         # Rule 2: If ATR is decrementing (negative change: high → low volatility)
                         elif atr_change < 0:
                             if self.p.short_use_atr_decrement_filter:
@@ -3094,7 +3092,6 @@ if __name__ == '__main__':
         
         # === COMBINED PLOT ===
         if ENABLE_PLOT and getattr(long_strategy.p, 'plot_result', False):
-            print("\n📊 Creating combined portfolio performance chart with 5-minute time axis...")
             try:
                 import matplotlib.pyplot as plt
                 import numpy as np
