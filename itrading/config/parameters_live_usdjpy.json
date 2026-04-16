@@ -101,6 +101,7 @@
     "print_signals": true,
     "print_summary": false,
     "export_trade_reports": true,
-    "lifecycle_logging": false
+    "lifecycle_logging": false,
+    "enable_eod_flatten": true
   }
 }

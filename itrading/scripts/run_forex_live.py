@@ -1,4 +1,55 @@
 import asyncio
+import pytz
+def _get_eod_cutoff_dt(instrument: str, now_utc: datetime) -> datetime:
+    """Return the EOD cutoff datetime in UTC for the given instrument and current date."""
+    # EOD is 15:00 EDT for NZDUSD, 17:00 EDT for all others
+    eastern = pytz.timezone('US/Eastern')
+    now_eastern = now_utc.astimezone(eastern)
+    if instrument.upper() == 'NZDUSD':
+        eod_eastern = now_eastern.replace(hour=15, minute=0, second=0, microsecond=0)
+    else:
+        eod_eastern = now_eastern.replace(hour=17, minute=0, second=0, microsecond=0)
+    # If already past EOD, set for next day
+    if now_eastern > eod_eastern:
+        eod_eastern = eod_eastern + timedelta(days=1)
+    return eod_eastern.astimezone(pytz.utc)
+
+async def _graceful_flatten_positions_and_orders(instrument: str, params: dict):
+    """Flatten all open positions and pending orders for the instrument, with minimal loss."""
+    # Cancel/replace all LMT/STP orders, close position at market if needed
+    if ib is None or not ib.isConnected():
+        logger.warning(f"[EOD-FLAT] IB not connected, cannot flatten {instrument}")
+        return
+    # Cancel all open LMT/STP orders
+    open_orders = _get_open_orders_for_instrument(instrument)
+    for order in open_orders:
+        try:
+            ib.cancelOrder(order['order_obj'])
+            logger.info(f"[EOD-FLAT] Cancelled order {order['order_id']} for {instrument}")
+        except Exception as exc:
+            logger.warning(f"[EOD-FLAT] Failed to cancel order {order['order_id']}: {exc}")
+    # Close open position if any
+    positions = ib.positions()
+    for pos in positions:
+        contract = getattr(pos, 'contract', None)
+        symbol = str(getattr(contract, 'symbol', '') or '').upper()
+        currency = str(getattr(contract, 'currency', '') or '').upper()
+        sec_type = str(getattr(contract, 'secType', '') or '').upper()
+        qty = _safe_float(getattr(pos, 'position', 0.0), 0.0)
+        if symbol + currency == instrument and abs(qty) > 0.0:
+            # Place market order to flatten
+            action = 'SELL' if qty > 0 else 'BUY'
+            try:
+                order = Order()
+                order.action = action
+                order.orderType = 'MKT'
+                order.totalQuantity = abs(qty)
+                order.tif = 'DAY'
+                ib.placeOrder(contract, order)
+                logger.info(f"[EOD-FLAT] Placed market {action} to flatten {instrument} qty={qty}")
+            except Exception as exc:
+                logger.warning(f"[EOD-FLAT] Failed to place market {action} for {instrument}: {exc}")
+
 import importlib
 import json
 import os
@@ -2854,7 +2905,22 @@ async def run_bot():
     subscription_started_at = datetime.now(timezone.utc)
 
     try:
+        eod_flattened = False
         while ib.isConnected():
+            # EOD flatten logic
+            enable_eod_flatten = params.get('enable_eod_flatten', True)
+            instrument = str(params.get('FOREX_INSTRUMENT', DEFAULT_FOREX_INSTRUMENT)).strip().upper()
+            now_utc = datetime.now(timezone.utc)
+            eod_cutoff = _get_eod_cutoff_dt(instrument, now_utc)
+            flatten_time = eod_cutoff - timedelta(minutes=15)
+            if enable_eod_flatten and not eod_flattened and now_utc >= flatten_time and now_utc < eod_cutoff:
+                logger.info(f"[EOD-FLAT] Triggering EOD flatten for {instrument} at {now_utc} (EOD={eod_cutoff})")
+                await _graceful_flatten_positions_and_orders(instrument, params)
+                eod_flattened = True
+            # Reset flag after EOD passes
+            if now_utc > eod_cutoff:
+                eod_flattened = False
+
             # Watchdog: if no bars arrive shortly after subscription, switch source and retry.
             if live_bar_count == 0:
                 elapsed = (datetime.now(timezone.utc) - subscription_started_at).total_seconds()

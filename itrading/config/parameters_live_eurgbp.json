@@ -102,6 +102,7 @@
     "verbose_debug": true,
     "print_signals": true,
     "export_trade_reports": true,
-    "lifecycle_logging": false
+    "lifecycle_logging": false,
+    "enable_eod_flatten": true
   }
 }
