@@ -360,8 +360,12 @@ def _console_print_with_instrument(tag: str, message: str, instrument: str | Non
         line = f"[{prefix_instrument}][{tag}] {message}"
     else:
         line = f"[{tag}] {message}"
-    print(line)
 
+    # Only print to terminal if not 'Live Tick'
+    if tag != 'Live Tick':
+        print(line)
+
+    # Write 'Live Tick' and 'Current Bar' to bars report
     if tag in ('Current Bar', 'Live Tick'):
         _write_bars_report_line(line)
 
@@ -2352,9 +2356,9 @@ async def execute_live_trade(contract, signal, params):
         action = "BUY" if signal['direction'] == 'LONG' else 'SELL'
         quantity = float(signal['size'])
         exit_tif = str(params.get('IB_BRACKET_EXIT_TIF', DEFAULT_IB_BRACKET_EXIT_TIF)).strip().upper() or DEFAULT_IB_BRACKET_EXIT_TIF
+        parent_tif = str(params.get('IB_PARENT_TIF', DEFAULT_IB_PARENT_TIF)).strip().upper() or DEFAULT_IB_PARENT_TIF
         if exit_tif not in ('DAY', 'GTC'):
             exit_tif = DEFAULT_IB_BRACKET_EXIT_TIF
-        parent_tif = str(params.get('IB_PARENT_TIF', DEFAULT_IB_PARENT_TIF)).strip().upper() or DEFAULT_IB_PARENT_TIF
         if parent_tif not in ('DAY', 'GTC'):
             parent_tif = DEFAULT_IB_PARENT_TIF
 
