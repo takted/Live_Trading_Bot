@@ -195,6 +195,23 @@ using in any live or simulated trading environment.
 """
 
 class ITradingStrategy(bt.Strategy):
+    def _format_bar_line_with_eastern(self, dt, open_, high, low, close):
+        """Format bar line with UTC and US/Eastern time for reporting/debugging."""
+        try:
+            from zoneinfo import ZoneInfo
+            eastern = ZoneInfo('America/New_York')
+            dt_utc = dt.replace(tzinfo=None)
+            dt_utc = dt.replace(tzinfo=ZoneInfo('UTC')) if dt.tzinfo is None else dt.astimezone(ZoneInfo('UTC'))
+            dt_eastern = dt_utc.astimezone(eastern)
+            eastern_label = dt_eastern.strftime('%Z')
+            eastern_time = dt_eastern.strftime('%Y-%m-%d %H:%M:%S')
+            utc_time = dt_utc.strftime('%Y-%m-%d %H:%M:%S')
+            return (f"Datetime: {utc_time} ({eastern_label}: {eastern_time}) | "
+                    f"Open Price: {open_} | High: {high} | Low: {low} | Closing Price: {close}")
+        except Exception:
+            # Fallback to UTC only
+            return (f"Datetime: {dt.strftime('%Y-%m-%d %H:%M:%S')} | "
+                    f"Open Price: {open_} | High: {high} | Low: {low} | Closing Price: {close}")
     DEFAULT_INSTRUMENT = 'AUDUSD'
     FOREX_INSTRUMENT_CONFIGS = {
         'AUDUSD': {
@@ -1942,23 +1959,6 @@ class ITradingStrategy(bt.Strategy):
             'Current Bar',
             self._format_bar_line_with_eastern(dt, float(self.data.open[0]), float(self.data.high[0]), float(self.data.low[0]), current_close)
         )
-
-    def _format_bar_line_with_eastern(self, dt, open_, high, low, close):
-        try:
-            from zoneinfo import ZoneInfo
-            eastern = ZoneInfo('America/New_York')
-            dt_utc = dt.replace(tzinfo=None)
-            dt_utc = dt.replace(tzinfo=ZoneInfo('UTC')) if dt.tzinfo is None else dt.astimezone(ZoneInfo('UTC'))
-            dt_eastern = dt_utc.astimezone(eastern)
-            eastern_label = dt_eastern.strftime('%Z')
-            eastern_time = dt_eastern.strftime('%Y-%m-%d %H:%M:%S')
-            utc_time = dt_utc.strftime('%Y-%m-%d %H:%M:%S')
-            return (f"Datetime: {utc_time} ({eastern_label}: {eastern_time}) | "
-                    f"Open Price: {open_} | High: {high} | Low: {low} | Closing Price: {close}")
-        except Exception:
-            # Fallback to UTC only
-            return (f"Datetime: {dt.strftime('%Y-%m-%d %H:%M:%S')} | "
-                    f"Open Price: {open_} | High: {high} | Low: {low} | Closing Price: {close}")
 
         # Track position state changes
         if self.position:
