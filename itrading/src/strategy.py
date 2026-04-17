@@ -1238,7 +1238,7 @@ class ITradingStrategy(bt.Strategy):
                 self.trade_report_file.write(f"=== ITRADING STRATEGY TRADE REPORT ===\n")
                 self.trade_report_file.write(f"Asset: {asset_name}\n")
                 self.trade_report_file.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                self.trade_report_file.write(f"Data File: {self._data_filename}\n")
+                # self.trade_report_file.write(f"Data File: {self._data_filename}\n")
 
                 # Trading configuration
                 direction = []
