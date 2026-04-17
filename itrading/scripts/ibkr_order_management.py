@@ -995,7 +995,7 @@ def _build_execution_report_rows(app: IBKROrderManagementApp) -> list[dict[str, 
                 "cumQty": execution.get("cumQty", ""),
                 "avgPrice": execution.get("avgPrice", ""),
                 "exchange": execution.get("exchange", ""),
-                "lastLiquidity": execution.get("lastLiquidity", ""),
+                "liq": execution.get("lastLiquidity", ""),
                 "commission": commission.get("commission", ""),
                 "commissionCcy": commission.get("currency", ""),
                 "commBase": comm_base,
@@ -1012,6 +1012,19 @@ def _build_execution_report_rows(app: IBKROrderManagementApp) -> list[dict[str, 
 
 def _build_open_orders_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
     rows = list(app.open_orders.values())
+    # Build a set of (symbol, currency, secType) for all non-flat positions
+    flat_instruments = set()
+    nonflat_instruments = set()
+    for pos in getattr(app, 'positions_rows', []):
+        symbol = str(pos.get('symbol', '')).upper()
+        currency = str(pos.get('currency', '')).upper()
+        sec_type = str(pos.get('secType', '')).upper()
+        qty = _to_float(pos.get('position'))
+        key = (symbol, currency, sec_type)
+        if qty is not None and abs(qty) > 1e-12:
+            nonflat_instruments.add(key)
+        else:
+            flat_instruments.add(key)
     for row in rows:
         status_data = app.order_status_by_id.get(int(row.get("orderId") or 0), {})
         if status_data:
@@ -1021,6 +1034,16 @@ def _build_open_orders_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]
             row["avgFillPrice"] = status_data.get("avgFillPrice", "")
             row["lastFillPrice"] = status_data.get("lastFillPrice", "")
             row["mktCapPrice"] = status_data.get("mktCapPrice", "")
+        # Determine if this order is for a flat instrument
+        symbol = str(row.get('symbol', '')).upper()
+        currency = str(row.get('currency', '')).upper()
+        sec_type = str(row.get('secType', '')).upper()
+        key = (symbol, currency, sec_type)
+        # Only flag as stale if it's a forex/cash order
+        if sec_type == 'CASH' and key not in nonflat_instruments:
+            row['stale'] = 'STALE'
+        else:
+            row['stale'] = ''
     rows.sort(key=lambda row: int(row.get("orderId") or 0))
     return rows
 
@@ -1135,12 +1158,17 @@ def _normalize_status(value: Any) -> str:
 def _is_completed_parent_filled(row: dict[str, Any]) -> bool:
     parent_id = int(row.get("parentId") or 0)
     parent_perm_id = int(row.get("parentPermId") or 0)
-    if parent_id != 0 or parent_perm_id != 0:
+    order_type = str(row.get("orderType") or "").strip().upper()
+    if parent_id != 0 or (parent_perm_id != 0 and order_type != "MKT"):
+        print(f"[DEBUG][PARENT_FILLED] Skipping as child: orderId={row.get('orderId')} parentId={parent_id} parentPermId={parent_perm_id} orderType={order_type}")
         return False
 
     status_text = str(row.get("status") or "").strip().lower()
     completed_status_text = str(row.get("completedStatus") or "").strip().lower()
-    return "filled" in status_text or "filled" in completed_status_text
+    filled = "filled" in status_text or "filled" in completed_status_text
+    if not filled:
+        print(f"[DEBUG][PARENT_FILLED] Not filled: orderId={row.get('orderId')} status={status_text} completedStatus={completed_status_text}")
+    return filled
 
 
 def _is_completed_child_filled(row: dict[str, Any]) -> bool:
@@ -1362,7 +1390,9 @@ def _build_actual_pnl_rows(
         if order_id:
             execution_by_order.setdefault(order_id, []).append(execution)
 
-    output: list[dict[str, Any]] = []
+    regular_rows: list[dict[str, Any]] = []
+    flatten_rows: list[dict[str, Any]] = []
+
     for parent in completed_rows:
         if not _is_completed_parent_filled(parent):
             continue
@@ -1390,86 +1420,157 @@ def _build_actual_pnl_rows(
             if (parent_perm_id and child_parent_perm_id == parent_perm_id) or (parent_order_id and child_parent_id == parent_order_id):
                 child_candidates.append(child)
 
-        if not child_candidates:
-            continue
+        if child_candidates:
+            lmt_children = [child for child in child_candidates if str(child.get("orderType") or "").strip().upper() == "LMT"]
+            stp_children = [child for child in child_candidates if str(child.get("orderType") or "").strip().upper().startswith("STP")]
 
-        lmt_children = [child for child in child_candidates if str(child.get("orderType") or "").strip().upper() == "LMT"]
-        stp_children = [child for child in child_candidates if str(child.get("orderType") or "").strip().upper().startswith("STP")]
+            lmt_qty = 0.0
+            lmt_notional = 0.0
+            lmt_commission = 0.0
+            for child in lmt_children:
+                qty, price, commission = _summarize_order_fills(child, execution_by_perm=execution_by_perm, execution_by_order=execution_by_order)
+                if qty is None or qty <= 0 or price is None:
+                    continue
+                lmt_qty += qty
+                lmt_notional += qty * price
+                lmt_commission += commission
 
-        lmt_qty = 0.0
-        lmt_notional = 0.0
-        lmt_commission = 0.0
-        for child in lmt_children:
-            qty, price, commission = _summarize_order_fills(child, execution_by_perm=execution_by_perm, execution_by_order=execution_by_order)
-            if qty is None or qty <= 0 or price is None:
-                continue
-            lmt_qty += qty
-            lmt_notional += qty * price
-            lmt_commission += commission
+            stp_qty = 0.0
+            stp_notional = 0.0
+            stp_commission = 0.0
+            for child in stp_children:
+                qty, price, commission = _summarize_order_fills(child, execution_by_perm=execution_by_perm, execution_by_order=execution_by_order)
+                if qty is None or qty <= 0 or price is None:
+                    continue
+                stp_qty += qty
+                stp_notional += qty * price
+                stp_commission += commission
 
-        stp_qty = 0.0
-        stp_notional = 0.0
-        stp_commission = 0.0
-        for child in stp_children:
-            qty, price, commission = _summarize_order_fills(child, execution_by_perm=execution_by_perm, execution_by_order=execution_by_order)
-            if qty is None or qty <= 0 or price is None:
-                continue
-            stp_qty += qty
-            stp_notional += qty * price
-            stp_commission += commission
+            lmt_avg_price = (lmt_notional / lmt_qty) if lmt_qty > 0 else None
+            stp_avg_price = (stp_notional / stp_qty) if stp_qty > 0 else None
 
-        lmt_avg_price = (lmt_notional / lmt_qty) if lmt_qty > 0 else None
-        stp_avg_price = (stp_notional / stp_qty) if stp_qty > 0 else None
+            lmt_gross = (lmt_avg_price - entry_price) * direction * lmt_qty if lmt_avg_price is not None else None
+            stp_gross_signed = (stp_avg_price - entry_price) * direction * stp_qty if stp_avg_price is not None else None
+            stp_gross_loss = max(-(stp_gross_signed or 0.0), 0.0) if stp_avg_price is not None else None
 
-        lmt_gross = (lmt_avg_price - entry_price) * direction * lmt_qty if lmt_avg_price is not None else None
-        stp_gross_signed = (stp_avg_price - entry_price) * direction * stp_qty if stp_avg_price is not None else None
-        stp_gross_loss = max(-(stp_gross_signed or 0.0), 0.0) if stp_avg_price is not None else None
+            entry_commission_lmt = entry_commission * (lmt_qty / entry_qty) if lmt_qty > 0 and entry_qty > 0 else 0.0
+            entry_commission_stp = entry_commission * (stp_qty / entry_qty) if stp_qty > 0 and entry_qty > 0 else 0.0
 
-        entry_commission_lmt = entry_commission * (lmt_qty / entry_qty) if lmt_qty > 0 and entry_qty > 0 else 0.0
-        entry_commission_stp = entry_commission * (stp_qty / entry_qty) if stp_qty > 0 and entry_qty > 0 else 0.0
+            actual_profit = (
+                max((lmt_gross or 0.0) - entry_commission_lmt - lmt_commission, 0.0)
+                if lmt_avg_price is not None
+                else None
+            )
+            actual_loss = (
+                max((stp_gross_loss or 0.0) + entry_commission_stp + stp_commission, 0.0)
+                if stp_avg_price is not None
+                else None
+            )
 
-        actual_profit = (
-            max((lmt_gross or 0.0) - entry_commission_lmt - lmt_commission, 0.0)
-            if lmt_avg_price is not None
-            else None
-        )
-        actual_loss = (
-            max((stp_gross_loss or 0.0) + entry_commission_stp + stp_commission, 0.0)
-            if stp_avg_price is not None
-            else None
-        )
+            # Convert loss values to negative for proper P&L representation
+            stp_gross_loss_display = -stp_gross_loss if stp_gross_loss is not None else None
+            actual_loss_display = -actual_loss if actual_loss is not None else None
 
-        # Convert loss values to negative for proper P&L representation
-        stp_gross_loss_display = -stp_gross_loss if stp_gross_loss is not None else None
-        actual_loss_display = -actual_loss if actual_loss is not None else None
+            regular_rows.append(
+                {
+                    "parentOrderId": parent_order_id,
+                    "parentPermId": parent_perm_id,
+                    "account": parent.get("account", ""),
+                    "symbol": parent.get("symbol", ""),
+                    "finInstrument": parent.get("finInstrument", ""),
+                    "pnlCurrency": parent.get("currency", ""),
+                    "side": "LONG" if direction > 0 else "SHORT",
+                    "entryQty": entry_qty,
+                    "entryPrice": entry_price,
+                    "entryComm": entry_commission,
+                    "lmtFilledQty": lmt_qty if lmt_qty > 0 else None,
+                    "lmtAvgPrice": lmt_avg_price,
+                    "lmtExitComm": lmt_commission if lmt_qty > 0 else None,
+                    "actualProfitGross": max(lmt_gross, 0.0) if lmt_gross is not None else None,
+                    "actualProfit": actual_profit,
+                    "stpFilledQty": stp_qty if stp_qty > 0 else None,
+                    "stpAvgPrice": stp_avg_price,
+                    "stpExitComm": stp_commission if stp_qty > 0 else None,
+                    "actualLossGross": stp_gross_loss_display,
+                    "actualLoss": actual_loss_display,
+                }
+            )
+        else:
+            # --- FLATTEN SCENARIO: No LMT/STP children, look for paired MKT entry/exit ---
+            for exit_row in completed_rows:
+                if exit_row is parent:
+                    print(f"[DEBUG][FLATTEN] Skipping self-pair: parent_order_id={parent.get('orderId')} exit_order_id={exit_row.get('orderId')}")
+                    continue
+                if not _is_completed_parent_filled(exit_row):
+                    print(f"[DEBUG][FLATTEN] Exit not filled: exit_order_id={exit_row.get('orderId')}")
+                    continue
+                exit_direction = _extract_parent_direction(exit_row)
+                if exit_direction == 0 or exit_direction == direction:
+                    print(f"[DEBUG][FLATTEN] Exit direction invalid or same as parent: parent_order_id={parent.get('orderId')} exit_order_id={exit_row.get('orderId')} exit_direction={exit_direction} parent_direction={direction}")
+                    continue
+                parent_qty = _to_float(parent.get("totalQuantity"))
+                exit_qty = _to_float(exit_row.get("totalQuantity"))
+                if not (parent.get("symbol", "") == exit_row.get("symbol", "")):
+                    print(f"[DEBUG][FLATTEN] Symbol mismatch: parent={parent.get('symbol','')} exit={exit_row.get('symbol','')}")
+                    continue
+                if not (parent.get("currency", "") == exit_row.get("currency", "")):
+                    print(f"[DEBUG][FLATTEN] Currency mismatch: parent={parent.get('currency','')} exit={exit_row.get('currency','')}")
+                    continue
+                if parent_qty is None or exit_qty is None or abs(parent_qty - exit_qty) >= 1e-6:
+                    print(f"[DEBUG][FLATTEN] Qty mismatch: parent_qty={parent_qty} exit_qty={exit_qty}")
+                    continue
+                if not (parent.get("account", "") == exit_row.get("account", "")):
+                    print(f"[DEBUG][FLATTEN] Account mismatch: parent={parent.get('account','')} exit={exit_row.get('account','')}")
+                    continue
+                if not (str(parent.get("orderType", "")).strip().upper() == "MKT"):
+                    print(f"[DEBUG][FLATTEN] Parent orderType not MKT: {parent.get('orderType','')}")
+                    continue
+                if not (str(exit_row.get("orderType", "")).strip().upper() == "MKT"):
+                    print(f"[DEBUG][FLATTEN] Exit orderType not MKT: {exit_row.get('orderType','')}")
+                    continue
+                exit_qty2, exit_price, exit_commission = _summarize_order_fills(
+                    exit_row,
+                    execution_by_perm=execution_by_perm,
+                    execution_by_order=execution_by_order,
+                )
+                if exit_qty2 is None or exit_qty2 <= 0 or exit_price is None:
+                    print(f"[DEBUG][FLATTEN] Exit fill invalid: exit_qty={exit_qty2} exit_price={exit_price}")
+                    continue
+                if parent_order_id > int(exit_row.get("orderId") or 0):
+                    print(f"[DEBUG][FLATTEN] Parent orderId > exit orderId: parent_order_id={parent_order_id} exit_order_id={exit_row.get('orderId')}")
+                    continue
+                realized_pnl = (exit_qty * exit_price - entry_qty * entry_price) * direction
+                total_commission = entry_commission + exit_commission
+                print(f"[DEBUG][FLATTEN] PAIRED: parent_order_id={parent_order_id} exit_order_id={exit_row.get('orderId')} qty={entry_qty} price_in={entry_price} price_out={exit_price}")
+                flatten_rows.append(
+                    {
+                        "parentOrderId": f"{parent_order_id}/{exit_row.get('orderId','')} (FLATTEN)",
+                        "parentPermId": f"{parent_perm_id}/{exit_row.get('permId','')}",
+                        "account": parent.get("account", ""),
+                        "symbol": parent.get("symbol", ""),
+                        "finInstrument": parent.get("finInstrument", ""),
+                        "pnlCurrency": parent.get("currency", ""),
+                        "side": "LONG->SHORT" if direction > 0 else "SHORT->LONG",
+                        "entryQty": entry_qty,
+                        "entryPrice": entry_price,
+                        "entryComm": entry_commission,
+                        "exitQty": exit_qty,
+                        "exitPrice": exit_price,
+                        "exitComm": exit_commission,
+                        "realizedPnL": realized_pnl - total_commission,
+                        "realizedPnLGross": realized_pnl,
+                        "totalCommission": total_commission,
+                    }
+                )
+                break
 
-        output.append(
-            {
-                "parentOrderId": parent_order_id,
-                "parentPermId": parent_perm_id,
-                "account": parent.get("account", ""),
-                "symbol": parent.get("symbol", ""),
-                "finInstrument": parent.get("finInstrument", ""),
-                "pnlCurrency": parent.get("currency", ""),
-                "side": "LONG" if direction > 0 else "SHORT",
-                "entryQty": entry_qty,
-                "entryPrice": entry_price,
-                "entryComm": entry_commission,
-                "lmtFilledQty": lmt_qty if lmt_qty > 0 else None,
-                "lmtAvgPrice": lmt_avg_price,
-                "lmtExitComm": lmt_commission if lmt_qty > 0 else None,
-                "actualProfitGross": max(lmt_gross, 0.0) if lmt_gross is not None else None,
-                "actualProfit": actual_profit,
-                "stpFilledQty": stp_qty if stp_qty > 0 else None,
-                "stpAvgPrice": stp_avg_price,
-                "stpExitComm": stp_commission if stp_qty > 0 else None,
-                "actualLossGross": stp_gross_loss_display,
-                "actualLoss": actual_loss_display,
-            }
-        )
-
-    output.sort(key=lambda row: (str(row.get("account", "")), int(row.get("parentOrderId") or 0)))
-    return output
+    print(f"[DEBUG] Final ACTUAL P&L regular rows: {len(regular_rows)}")
+    print(f"[DEBUG] Final FLATTENED P&L rows: {len(flatten_rows)}")
+    if regular_rows:
+        print(f"[DEBUG] Regular Output sample: {regular_rows[:2]}")
+    if flatten_rows:
+        print(f"[DEBUG] Flattened Output sample: {flatten_rows[:2]}")
+    return regular_rows, flatten_rows
 
 
 def _build_account_summary_rows(app: IBKROrderManagementApp) -> list[dict[str, Any]]:
@@ -1746,7 +1847,7 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
         open_rows=open_rows,
         execution_rows=execution_rows,
     )
-    actual_pnl_rows = _build_actual_pnl_rows(
+    actual_pnl_rows, flattened_pnl_rows = _build_actual_pnl_rows(
         completed_rows=completed_rows,
         execution_rows=execution_rows,
     )
@@ -1760,6 +1861,11 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
         app=app,
         value_fields=["actualProfitGross", "actualProfit", "actualLossGross", "actualLoss"],
     )
+    _add_usd_columns_to_pnl_rows(
+        rows=flattened_pnl_rows,
+        app=app,
+        value_fields=["realizedPnL", "realizedPnLGross"],
+    )
     targeted_pnl_summary = {
         "parentOrderId": "TOTAL",
         "targetProfitUSD": _sum_column(targeted_released_pnl_rows, "targetProfitUSD"),
@@ -1769,6 +1875,12 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
         "parentOrderId": "TOTAL",
         "actualProfitUSD": _sum_column(actual_pnl_rows, "actualProfitUSD"),
         "actualLossUSD": _sum_column(actual_pnl_rows, "actualLossUSD"),
+    }
+    flattened_pnl_summary = {
+        "parentOrderId": "TOTAL",
+        "realizedPnL": _sum_column(flattened_pnl_rows, "realizedPnL"),
+        "realizedPnLGross": _sum_column(flattened_pnl_rows, "realizedPnLGross"),
+        "totalCommission": _sum_column(flattened_pnl_rows, "totalCommission"),
     }
 
     print("\n=== IBKR ORDER / EXECUTION ANALYTICS REPORT ===")
@@ -1897,6 +2009,7 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
                 ("stp/aux", "auxPrice"),
                 ("tif", "tif"),
                 ("status", "status"),
+                ("stale", "stale"),
             ],
         )
     )
@@ -2008,7 +2121,7 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
 
     print(
         _format_table(
-            "ACTUAL P&L",
+            "ACTUAL P&L (LMT/STP logic)",
             actual_pnl_rows,
             [
                 ("pOId", "parentOrderId"),
@@ -2037,6 +2150,32 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
                 ("actLsUSD", "actualLossUSD"),
             ],
             summary_row=actual_pnl_summary,
+        )
+    )
+
+    print(
+        _format_table(
+            "FLATTENED P&L (End-of-Day MKT Exits)",
+            flattened_pnl_rows,
+            [
+                ("OrderIds", "parentOrderId"),
+                ("PermIds", "parentPermId"),
+                ("Account", "account"),
+                ("Symbol", "symbol"),
+                ("Instrument", "finInstrument"),
+                ("Currency", "pnlCurrency"),
+                ("Side", "side"),
+                ("EntryQty", "entryQty"),
+                ("EntryPrice", "entryPrice"),
+                ("EntryComm", "entryComm"),
+                ("ExitQty", "exitQty"),
+                ("ExitPrice", "exitPrice"),
+                ("ExitComm", "exitComm"),
+                ("RealizedPnL", "realizedPnL"),
+                ("RealizedPnLGross", "realizedPnLGross"),
+                ("TotalComm", "totalCommission"),
+            ],
+            summary_row=flattened_pnl_summary,
         )
     )
 

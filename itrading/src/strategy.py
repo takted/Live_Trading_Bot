@@ -2061,7 +2061,6 @@ class ITradingStrategy(bt.Strategy):
                 self.entry_state = f"ARMED_{signal_direction}"
                 self.armed_direction = signal_direction
                 self.pullback_candle_count = 0
-
                 # 🔧 CRITICAL FIX: Store the original signal candle for validation
                 self.signal_trigger_candle = {
                     'open': float(self.data.open[-1]),
@@ -2072,22 +2071,20 @@ class ITradingStrategy(bt.Strategy):
                     'is_bullish': self.data.close[-1] > self.data.open[-1],
                     'is_bearish': self.data.close[-1] < self.data.open[-1]
                 }
-
                 # 🔍 DEBUG: Show trigger candle storage for SHORT signals
                 if signal_direction == 'SHORT':
                     prev_close = self.data.close[-1]
                     prev_open = self.data.open[-1]
                     print(f"\n🔍 SHORT SIGNAL TRIGGER STORAGE - {dt:%Y-%m-%d %H:%M}:")
                     print(f"   📦 STORING Trigger Candle: O:{prev_open:.5f} C:{prev_close:.5f}")
-                    print(
-                        f"   📦 Candle Type: {'BEARISH' if prev_close < prev_open else 'BULLISH' if prev_close > prev_open else 'DOJI'}")
+                    print(f"   📦 Candle Type: {'BEARISH' if prev_close < prev_open else 'BULLISH' if prev_close > prev_open else 'DOJI'}")
                     print(f"   📦 Raw Flags: is_bullish={prev_close > prev_open} | is_bearish={prev_close < prev_open}")
                     print(f"   🎯 This candle will be used for validation when entry executes")
-
-                if self.p.print_signals:
+                    # Always log ARMED_SHORT transition
+                    print(f"[LOG] STATE TRANSITION: SCANNING → ARMED_SHORT at {dt:%Y-%m-%d %H:%M}")
+                if self.p.print_signals or signal_direction == 'SHORT':
                     print(f"STATE TRANSITION: SCANNING → ARMED_{signal_direction} at {dt:%Y-%m-%d %H:%M}")
-                    print(
-                        f"   Signal detection candle: close[-1]={self.data.close[-1]:.5f} open[-1]={self.data.open[-1]:.5f}")
+                    print(f"   Signal detection candle: close[-1]={self.data.close[-1]:.5f} open[-1]={self.data.open[-1]:.5f}")
                     print(f"   Bearish previous candle: {self.data.close[-1] < self.data.open[-1]}")
                     print(f"   Starting pullback confirmation phase...")
             else:
@@ -2099,12 +2096,16 @@ class ITradingStrategy(bt.Strategy):
                 # Transition to WINDOW_OPEN state
                 self.entry_state = "WINDOW_OPEN"
                 self._phase3_open_breakout_window(self.armed_direction)
-                if self.p.print_signals:
+                # Always log ARMED_SHORT → WINDOW_OPEN transition
+                if self.armed_direction == 'SHORT':
+                    print(f"[LOG] STATE TRANSITION: ARMED_SHORT → WINDOW_OPEN at {dt:%Y-%m-%d %H:%M}")
+                    print(f"   Previous candle at window open: close[-1]={self.data.close[-1]:.5f} open[-1]={self.data.open[-1]:.5f}")
+                    print(f"   Bearish previous candle: {self.data.close[-1] < self.data.open[-1]} (required for SHORT)")
+                    print(f"   Pullback complete, window monitoring begins...")
+                elif self.p.print_signals:
                     print(f"STATE TRANSITION: ARMED_{self.armed_direction} → WINDOW_OPEN at {dt:%Y-%m-%d %H:%M}")
-                    print(
-                        f"   Previous candle at window open: close[-1]={self.data.close[-1]:.5f} open[-1]={self.data.open[-1]:.5f}")
-                    print(
-                        f"   Bearish previous candle: {self.data.close[-1] < self.data.open[-1]} (required for SHORT)")
+                    print(f"   Previous candle at window open: close[-1]={self.data.close[-1]:.5f} open[-1]={self.data.open[-1]:.5f}")
+                    print(f"   Bearish previous candle: {self.data.close[-1] < self.data.open[-1]} (required for SHORT)")
                     print(f"   Pullback complete, window monitoring begins...")
             else:
                 self._lifecycle_debug(

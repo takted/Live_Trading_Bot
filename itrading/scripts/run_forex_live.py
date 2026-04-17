@@ -41,6 +41,9 @@ async def _graceful_flatten_positions_and_orders(instrument: str, params: dict):
             # Place market order to flatten
             action = 'SELL' if qty > 0 else 'BUY'
             try:
+                # Ensure exchange is set for Forex contracts
+                if hasattr(contract, 'exchange'):
+                    contract.exchange = 'IDEALPRO'
                 order = Order()
                 order.action = action
                 order.orderType = 'MKT'
