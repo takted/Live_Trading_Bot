@@ -712,9 +712,22 @@ def _merge_account_summary_tags(tags: str, required_tags: Iterable[str] = _REQUI
     return ",".join(output)
 
 
-def _clean_value(value: Any) -> str:
+def _clean_value(value: Any, key: str = "") -> str:
     if value is None:
         return ""
+    # For quantity columns, always show as integer with thousands separator
+    quantity_keys = {
+        "entryQty", "lmtQty", "stpQty", "exitQty", "EntryQty", "ExitQty", "qty", "filled", "remaining", "totalQuantity", "shares", "cumQty",
+        "lmtFilledQty", "stpFilledQty"
+    }
+    if key in quantity_keys:
+        try:
+            num = float(str(value).replace(",", ""))
+            if not math.isfinite(num):
+                return str(value)
+            return f"{int(round(num)):,}"
+        except (TypeError, ValueError):
+            return str(value)
     if isinstance(value, float):
         if abs(value) >= 1000:
             return f"{value:,.4f}"
@@ -734,8 +747,8 @@ def _format_table(
 
     widths: dict[str, int] = {}
     for header, key in columns:
-        max_row = max((len(_clean_value(row.get(key, ""))) for row in rows_list), default=0)
-        summary_len = len(_clean_value(summary_row.get(key, ""))) if isinstance(summary_row, dict) else 0
+        max_row = max((len(_clean_value(row.get(key, ""), key)) for row in rows_list), default=0)
+        summary_len = len(_clean_value(summary_row.get(key, ""), key)) if isinstance(summary_row, dict) else 0
         widths[key] = max(len(header), max_row, summary_len)
 
     header_line = " | ".join(header.ljust(widths[key]) for header, key in columns)
@@ -743,12 +756,12 @@ def _format_table(
 
     data_lines = []
     for row in rows_list:
-        data_lines.append(" | ".join(_clean_value(row.get(key, "")).ljust(widths[key]) for _, key in columns))
+        data_lines.append(" | ".join(_clean_value(row.get(key, ""), key).ljust(widths[key]) for _, key in columns))
 
     table_lines = [f"\n{title}", header_line, sep_line, *data_lines]
     if isinstance(summary_row, dict):
         table_lines.append(sep_line)
-        table_lines.append(" | ".join(_clean_value(summary_row.get(key, "")).ljust(widths[key]) for _, key in columns))
+        table_lines.append(" | ".join(_clean_value(summary_row.get(key, ""), key).ljust(widths[key]) for _, key in columns))
     table_lines.append("")
 
     return "\n".join(table_lines)
@@ -1861,10 +1874,24 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
         app=app,
         value_fields=["actualProfitGross", "actualProfit", "actualLossGross", "actualLoss"],
     )
+    # Add USD columns for realizedPnL, realizedPnLGross, realized profit, and realized loss for FLATTENED P&L
     _add_usd_columns_to_pnl_rows(
         rows=flattened_pnl_rows,
         app=app,
         value_fields=["realizedPnL", "realizedPnLGross"],
+    )
+    # Add realized profit/loss USD columns for consistency with ACTUAL P&L
+    for row in flattened_pnl_rows:
+        realized_pnl = row.get("realizedPnL")
+        # Profit is positive, loss is negative
+        profit = realized_pnl if realized_pnl is not None and realized_pnl > 0 else 0.0
+        loss = -realized_pnl if realized_pnl is not None and realized_pnl < 0 else 0.0
+        row["realizedProfit"] = profit if profit != 0.0 else None
+        row["realizedLoss"] = -loss if loss != 0.0 else None
+    _add_usd_columns_to_pnl_rows(
+        rows=flattened_pnl_rows,
+        app=app,
+        value_fields=["realizedProfit", "realizedLoss"],
     )
     targeted_pnl_summary = {
         "parentOrderId": "TOTAL",
@@ -1881,6 +1908,8 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
         "realizedPnL": _sum_column(flattened_pnl_rows, "realizedPnL"),
         "realizedPnLGross": _sum_column(flattened_pnl_rows, "realizedPnLGross"),
         "totalCommission": _sum_column(flattened_pnl_rows, "totalCommission"),
+        "realizedProfitUSD": _sum_column(flattened_pnl_rows, "realizedProfitUSD"),
+        "realizedLossUSD": _sum_column(flattened_pnl_rows, "realizedLossUSD"),
     }
 
     print("\n=== IBKR ORDER / EXECUTION ANALYTICS REPORT ===")
@@ -2158,22 +2187,28 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
             "FLATTENED P&L (End-of-Day MKT Exits)",
             flattened_pnl_rows,
             [
-                ("OrderIds", "parentOrderId"),
-                ("PermIds", "parentPermId"),
-                ("Account", "account"),
-                ("Symbol", "symbol"),
-                ("Instrument", "finInstrument"),
-                ("Currency", "pnlCurrency"),
+                ("OId", "parentOrderId"),
+                ("PId", "parentPermId"),
+                ("Acct", "account"),
+                ("Sym", "symbol"),
+                ("Instr", "finInstrument"),
+                ("Ccy", "pnlCurrency"),
                 ("Side", "side"),
-                ("EntryQty", "entryQty"),
-                ("EntryPrice", "entryPrice"),
-                ("EntryComm", "entryComm"),
-                ("ExitQty", "exitQty"),
-                ("ExitPrice", "exitPrice"),
-                ("ExitComm", "exitComm"),
-                ("RealizedPnL", "realizedPnL"),
-                ("RealizedPnLGross", "realizedPnLGross"),
-                ("TotalComm", "totalCommission"),
+                ("EntQty", "entryQty"),
+                ("EntPx", "entryPrice"),
+                ("EntCm", "entryComm"),
+                ("ExtQty", "exitQty"),
+                ("ExtPx", "exitPrice"),
+                ("ExtCm", "exitComm"),
+                ("RlzPnL", "realizedPnL"),
+                ("RlzPnLUSD", "realizedPnLUSD"),
+                ("RlzPr", "realizedProfit"),
+                ("RlzPrUSD", "realizedProfitUSD"),
+                ("RlzLs", "realizedLoss"),
+                ("RlzLsUSD", "realizedLossUSD"),
+                ("RlzPnLG", "realizedPnLGross"),
+                ("RlzPnLGUSD", "realizedPnLGrossUSD"),
+                ("TotCm", "totalCommission"),
             ],
             summary_row=flattened_pnl_summary,
         )
