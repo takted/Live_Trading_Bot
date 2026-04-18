@@ -195,6 +195,14 @@ using in any live or simulated trading environment.
 """
 
 class ITradingStrategy(bt.Strategy):
+    # --- Historical Warm-up Logging ---
+    def _log_warmup_info(self, message):
+        """Append warm-up info to buffer and print to terminal."""
+        if not hasattr(self, 'historical_warmup_log'):
+            self.historical_warmup_log = []
+        self.historical_warmup_log.append(message)
+        print(message)
+
     def _format_bar_line_with_eastern(self, dt, open_, high, low, close):
         """Format bar line with UTC and US/Eastern time for reporting/debugging."""
         try:
@@ -469,20 +477,20 @@ class ITradingStrategy(bt.Strategy):
             if hasattr(self, 'entry_window_start') and self.entry_window_start is not None:
                 # Primary: Use window start (most accurate)
                 periods_before_entry = current_bar - self.entry_window_start
-                print(f"🎯 DEBUG: Used entry_window_start: {self.entry_window_start}, bars = {periods_before_entry}")
+                self._log_warmup_info(f"🎯 DEBUG: Used entry_window_start: {self.entry_window_start}, bars = {periods_before_entry}")
             elif hasattr(self, 'signal_detection_bar') and self.signal_detection_bar is not None:
                 # Secondary: Use signal detection bar
                 periods_before_entry = current_bar - self.signal_detection_bar
-                print(f"🎯 DEBUG: Used signal_detection_bar: {self.signal_detection_bar}, bars = {periods_before_entry}")
+                self._log_warmup_info(f"🎯 DEBUG: Used signal_detection_bar: {self.signal_detection_bar}, bars = {periods_before_entry}")
             elif hasattr(self, 'window_bar_start') and self.window_bar_start is not None:
                 # Tertiary: Use window_bar_start if available
                 periods_before_entry = current_bar - self.window_bar_start
-                print(f"🎯 DEBUG: Used window_bar_start: {self.window_bar_start}, bars = {periods_before_entry}")
+                self._log_warmup_info(f"🎯 DEBUG: Used window_bar_start: {self.window_bar_start}, bars = {periods_before_entry}")
             else:
                 # Quaternary: Estimate based on pullback count + 1
                 fallback_bars_to_entry = getattr(self, 'pullback_candle_count', 0) + 1
                 periods_before_entry = fallback_bars_to_entry
-                print(
+                self._log_warmup_info(
                     f"🎯 DEBUG: Used fallback calculation: pullback_count={getattr(self, 'pullback_candle_count', 0)} + 1 = {periods_before_entry}")
 
             # Ensure reasonable bounds
@@ -825,7 +833,7 @@ class ITradingStrategy(bt.Strategy):
                         risk_amount = sizing_capital * self.p.risk_percent
             else:
                 risk_amount = account_equity * self.p.risk_percent
-            
+
             if pip_risk > 0:
                 value_per_pip_per_unit = self._get_pip_value_per_unit_in_account_currency(entry_price)
                 risk_per_unit = pip_risk * value_per_pip_per_unit
@@ -852,7 +860,7 @@ class ITradingStrategy(bt.Strategy):
         if units > max_units_by_value:
              print(f"DEBUG_POSITION_SIZE: Sizing logic resulted in {units} which exceeds max by value ({max_units_by_value}). Capping.")
              units = max_units_by_value
-        
+
         # If after all that, the size is still less than the minimum, block it.
         if units < min_exchange_units:
             print(f"DEBUG_POSITION_SIZE: Final calculated size {units} is below exchange minimum {min_exchange_units}. Blocking trade.")
@@ -975,14 +983,14 @@ class ITradingStrategy(bt.Strategy):
         # Warn if data filename does not match the configured instrument
         data_filename = getattr(self, '_data_filename', '')
         if isinstance(data_filename, str) and data_filename and instrument not in data_filename.upper():
-            print(f"WARNING: Data file '{data_filename}' may not match configured instrument {instrument}")
+            self._log_warmup_info(f"WARNING: Data file '{data_filename}' may not match configured instrument {instrument}")
 
         # Warn if current price is outside the expected range for this instrument
         if hasattr(self.data, 'close') and len(self.data.close) > 0:
             current_price = float(self.data.close[0])
             if not (price_range[0] <= current_price <= price_range[1]):
                 price_format = f"{{:.{self.p.forex_pip_decimal_places}f}}"
-                print(
+                self._log_warmup_info(
                     f"WARNING: Price {price_format.format(current_price)} seems unusual for {instrument} "
                     f"(expected range: {price_range[0]}-{price_range[1]})"
                 )
@@ -1005,7 +1013,7 @@ class ITradingStrategy(bt.Strategy):
             return config
 
         # Safe fallback: preserve current runtime params instead of forcing AUDUSD defaults.
-        print(f"WARNING: Unknown instrument '{instrument_name}'. Using runtime forex params as fallback.")
+        self._log_warmup_info(f"WARNING: Unknown instrument '{instrument_name}'. Using runtime forex params as fallback.")
         return self._get_forex_config_from_params()
 
     def _apply_forex_config(self):
@@ -1024,9 +1032,9 @@ class ITradingStrategy(bt.Strategy):
         self.p.forex_margin_required = config['margin_required']
         self.p.forex_spread_pips = config['typical_spread']
 
-        print(f"CONFIGURED: {instrument_name}")
-        print(f"Forex Config: {self.p.forex_base_currency}/{self.p.forex_quote_currency}")
-        print(
+        self._log_warmup_info(f"CONFIGURED: {instrument_name}")
+        self._log_warmup_info(f"Forex Config: {self.p.forex_base_currency}/{self.p.forex_quote_currency}")
+        self._log_warmup_info(
             f"Tick Value: {self.p.forex_pip_value} | Lot Size: {self.p.contract_size:,} | Margin: {self.p.forex_margin_required}%")
 
     def __init__(self):
@@ -1039,6 +1047,14 @@ class ITradingStrategy(bt.Strategy):
         self.ema_filter_price = bt.ind.EMA(d.close, period=self.p.ema_filter_price_length)
         self.ema_exit = bt.ind.EMA(d.close, period=self.p.ema_exit_length)
         self.atr = bt.ind.ATR(d, period=self.p.atr_length)
+
+        # --- Historical Warm-up Log Buffer ---
+        self.historical_warmup_log = []
+        # Track warm-up phase for logging
+        self._in_warmup_phase = True
+
+        # Log indicator setup for warm-up section
+        self._log_warmup_info(f"[Warm-up] Initialized indicators: EMA Fast({self.p.ema_fast_length}), EMA Medium({self.p.ema_medium_length}), EMA Slow({self.p.ema_slow_length}), EMA Confirm({self.p.ema_confirm_length}), ATR({self.p.atr_length})")
 
         # MANUAL ORDER MANAGEMENT - Replace buy_bracket with simple orders
         self.order = None  # Track current pending order
@@ -1159,7 +1175,11 @@ class ITradingStrategy(bt.Strategy):
     def _tagged_print(self, tag, message):
         line = f"{self._instrument_log_prefix()}[{tag}] {message}"
         print(line)
-
+        # Capture all tagged print output during warm-up phase
+        if getattr(self, '_in_warmup_phase', False):
+            if not hasattr(self, 'historical_warmup_log'):
+                self.historical_warmup_log = []
+            self.historical_warmup_log.append(line)
         # Keep bars report focused: only Current Bar lines from strategy output.
         if tag == 'Current Bar' and callable(self.p.bars_report_callback):
             try:
@@ -1255,6 +1275,15 @@ class ITradingStrategy(bt.Strategy):
                 self.trade_report_file.write(f"=== ITRADING STRATEGY TRADE REPORT ===\n")
                 self.trade_report_file.write(f"Asset: {asset_name}\n")
                 self.trade_report_file.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+                # --- HISTORICAL WARM-UP LOG SECTION ---
+                self.trade_report_file.write("\n========== HISTORICAL WARM-UP LOG ==========" + "\n")
+                if hasattr(self, 'historical_warmup_log') and self.historical_warmup_log:
+                    for line in self.historical_warmup_log:
+                        self.trade_report_file.write(line.rstrip("\n") + "\n")
+                else:
+                    self.trade_report_file.write("No historical warm-up info recorded.\n")
+                self.trade_report_file.write("============================================\n\n")
                 # self.trade_report_file.write(f"Data File: {self._data_filename}\n")
 
                 # Trading configuration
@@ -1907,6 +1936,9 @@ class ITradingStrategy(bt.Strategy):
 
     def next(self):
         """Main strategy logic using volatility expansion channel entry system with 4-phase state machine"""
+        # Detect transition to live trading (end of warm-up phase)
+        if getattr(self, '_in_warmup_phase', False) and self.p.live_trading and len(self) == len(self.data):
+            self._in_warmup_phase = False
         # --- Lifecycle Logger: fires only on the very first next() call ---
         if self.p.lifecycle_logging and not self._first_next_logged:
             _dt0 = bt.num2date(self.data.datetime[0])
@@ -1916,7 +1948,7 @@ class ITradingStrategy(bt.Strategy):
         # CRITICAL: In live mode, we need to process ALL bars to warm up indicators,
         # then only emit signals from the LAST bar (current 5-min bar)
         # This ensures indicators have sufficient historical context
-        
+
         # Track portfolio value and timestamp for plotting
         if hasattr(self, '_portfolio_values'):
             self._portfolio_values.append(self.broker.get_value())
@@ -2288,7 +2320,7 @@ class ITradingStrategy(bt.Strategy):
                 if self.p.enable_risk_sizing:
                     # Call the helper function to get the correct unit size
                     optimal_lots, units, _, _, _ = self._calculate_forex_position_size(entry_price, self.stop_level)
-                    
+
                     if units is None or units <= 0:
                         self._mark_entry_blocked()
                         self._reset_entry_state()
@@ -2316,7 +2348,7 @@ class ITradingStrategy(bt.Strategy):
                         self._lifecycle_debug(
                             f"entry suppressed live warmup | bar={len(self)} total={self.data.buflen()}")
                         return
-                    
+
                     # In live mode, put a signal on the queue instead of placing an order
                     if self.p.signal_queue is not None:
                         signal = {
