@@ -4604,22 +4604,26 @@ class ITradingStrategyAUDUSD(ITradingStrategy):
         contract_size=100000,
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
-        long_atr_tp_multiplier=5.0,
+        long_atr_sl_multiplier=2.0,  # Standardized: SL = 2.0 ATR
+        long_atr_tp_multiplier=3.0,  # Standardized: TP = 3.0 ATR
+        short_atr_sl_multiplier=2.0,
+        short_atr_tp_multiplier=3.0,
+        long_use_ema_order_condition=True,  # Trend filter
+        long_use_atr_filter=True,           # Volatility filter
+        long_atr_min_threshold=0.00015,     # Example: tune as needed
+        long_use_price_filter_ema=True,     # Price above EMA filter
+        # Add more filters as needed (e.g., RSI)
     )
 
     def _calculate_exit_levels(self, signal_direction, atr_now, bar_low, bar_high, entry_price):
-        """AUDUSD override: place LONG TP closer to the fill for faster DAY LMT exits.
-
-        The shared strategy anchors LONG take-profit from the signal bar high,
-        which can overshoot the actual market-fill price by several pips and leave
-        SELL LMT orders resting too long. For AUDUSD only, keep the existing stop
-        model but anchor LONG TP from the actual entry price instead.
-        """
+        """AUDUSD: Anchor both SL and TP from entry price, use standardized ATR multipliers."""
         if signal_direction == 'LONG':
-            stop_level = bar_low - atr_now * self.p.long_atr_sl_multiplier
+            stop_level = entry_price - atr_now * self.p.long_atr_sl_multiplier
             take_level = entry_price + atr_now * self.p.long_atr_tp_multiplier
-            return stop_level, take_level
-        return super()._calculate_exit_levels(signal_direction, atr_now, bar_low, bar_high, entry_price)
+        else:
+            stop_level = entry_price + atr_now * self.p.short_atr_sl_multiplier
+            take_level = entry_price - atr_now * self.p.short_atr_tp_multiplier
+        return stop_level, take_level
 
 
 class ITradingStrategyEURUSD(ITradingStrategy):
@@ -4632,6 +4636,15 @@ class ITradingStrategyEURUSD(ITradingStrategy):
         contract_size=100000,
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
+        long_atr_sl_multiplier=2.0,
+        long_atr_tp_multiplier=3.0,
+        short_atr_sl_multiplier=2.0,
+        short_atr_tp_multiplier=3.0,
+        long_use_ema_order_condition=True,
+        long_use_atr_filter=True,
+        long_atr_min_threshold=0.00015,
+        long_use_price_filter_ema=True,
+        # Add more filters as needed (e.g., RSI)
     )
 
     # Minimum candle body (in price units) to be considered directional.
@@ -4706,17 +4719,65 @@ class ITradingStrategyGBPUSD(ITradingStrategy):
         enable_short_trades=True,  # Enable both LONG and SHORT trading by default
     )
 
+    params = dict(
+        instrument_name='GBPUSD',
+        forex_base_currency='GBP',
+        forex_quote_currency='USD',
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        contract_size=100000,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
+        long_atr_sl_multiplier=2.0,
+        long_atr_tp_multiplier=3.0,
+        short_atr_sl_multiplier=2.0,
+        short_atr_tp_multiplier=3.0,
+        long_use_ema_order_condition=True,
+        long_use_atr_filter=True,
+        long_atr_min_threshold=0.00015,
+        long_use_price_filter_ema=True,
+        # Add more filters as needed (e.g., RSI)
+    )
+
     def _calculate_exit_levels(self, signal_direction, atr_now, bar_low, bar_high, entry_price):
-        """GBPUSD plugin: optionally anchor TP from the entry price instead of signal-bar extremes."""
-        if bool(getattr(self.p, 'enable_entry_relative_tp', False)):
-            if signal_direction == 'LONG':
-                stop_level = bar_low - atr_now * self.p.long_atr_sl_multiplier
-                take_level = entry_price + atr_now * self.p.long_atr_tp_multiplier
-            else:
-                stop_level = bar_high + atr_now * self.p.short_atr_sl_multiplier
-                take_level = entry_price - atr_now * self.p.short_atr_tp_multiplier
-            return stop_level, take_level
-        return super()._calculate_exit_levels(signal_direction, atr_now, bar_low, bar_high, entry_price)
+        """GBPUSD: Anchor both SL and TP from entry price, use standardized ATR multipliers."""
+        if signal_direction == 'LONG':
+            stop_level = entry_price - atr_now * self.p.long_atr_sl_multiplier
+            take_level = entry_price + atr_now * self.p.long_atr_tp_multiplier
+        else:
+            stop_level = entry_price + atr_now * self.p.short_atr_sl_multiplier
+            take_level = entry_price - atr_now * self.p.short_atr_tp_multiplier
+        return stop_level, take_level
+class ITradingStrategyNZDUSD(ITradingStrategy):
+    params = dict(
+        instrument_name='NZDUSD',
+        forex_base_currency='NZD',
+        forex_quote_currency='USD',
+        forex_pip_value=0.0001,
+        forex_pip_decimal_places=5,
+        contract_size=100000,
+        forex_spread_pips=2.2,
+        forex_margin_required=3.33,
+        long_atr_sl_multiplier=2.0,
+        long_atr_tp_multiplier=3.0,
+        short_atr_sl_multiplier=2.0,
+        short_atr_tp_multiplier=3.0,
+        long_use_ema_order_condition=True,
+        long_use_atr_filter=True,
+        long_atr_min_threshold=0.00015,
+        long_use_price_filter_ema=True,
+        # Add more filters as needed (e.g., RSI)
+    )
+
+    def _calculate_exit_levels(self, signal_direction, atr_now, bar_low, bar_high, entry_price):
+        """NZDUSD: Anchor both SL and TP from entry price, use standardized ATR multipliers."""
+        if signal_direction == 'LONG':
+            stop_level = entry_price - atr_now * self.p.long_atr_sl_multiplier
+            take_level = entry_price + atr_now * self.p.long_atr_tp_multiplier
+        else:
+            stop_level = entry_price + atr_now * self.p.short_atr_sl_multiplier
+            take_level = entry_price - atr_now * self.p.short_atr_tp_multiplier
+        return stop_level, take_level
 
     def _phase2_confirm_pullback(self, armed_direction):
         """GBPUSD override: honor *_use_pullback_entry flags by bypassing phase2 when disabled."""
