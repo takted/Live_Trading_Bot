@@ -378,8 +378,8 @@ def _console_print_with_instrument(tag: str, message: str, instrument: str | Non
     else:
         line = f"[{tag}] {message}"
 
-    # Only print to terminal if not 'Live Tick'
-    if tag != 'Live Tick':
+    # Only print to terminal not 'Live Tick' nor Current Bar'
+    if tag not in ('Current Bar', 'Live Tick'):
         print(line)
 
     # Write 'Live Tick' and 'Current Bar' to bars report
@@ -2699,7 +2699,7 @@ async def run_historical_analysis(params):
     """Runs the strategy on historical data to warm up and generate a report."""
     global historical_df, last_strategy_broker_snapshot, last_strategy_instrument_nlv
     strategy_label = globals().get('active_strategy_label', f'{DEFAULT_STRATEGY_MODULE}.{DEFAULT_STRATEGY_CLASS_NAME}')
-    logger.info(f"--- Running {strategy_label} on historical data (no orders) to warm up... ---")
+    logger.info(f"Running {strategy_label} on historical data (no orders) to warm up...")
 
     contract = Forex(params['FOREX_INSTRUMENT'])
     timeout_seconds = _ib_request_timeout_seconds(params)
@@ -2818,7 +2818,7 @@ async def run_bot():
         if isinstance(restored_state, dict) and restored_state:
             live_strategy_state = restored_state
     else:
-        logger.info(f"[{instrument}] Snapshot logic disabled (ENABLE_SNAPSHOT_LOGIC=false). Using in-memory lifecycle bridge only.")
+        logger.info(f"Snapshot logic disabled (ENABLE_SNAPSHOT_LOGIC=false) for {instrument}. Using in-memory lifecycle bridge only.")
         live_lifecycle_bridge = LiveLifecycleBridge(logger=logger, pip_value=float(pip_value))
 
     # Update pip_value from current config in case it changed.

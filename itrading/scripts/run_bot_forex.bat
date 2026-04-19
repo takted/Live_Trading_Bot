@@ -7,7 +7,7 @@ REM ============================================================================
 
 echo.
 echo ========================================================================
-echo ITRADING BOT - LAUNCHER
+echo ITRADING BOT - LAUNCHER is run_bot_forex.bat
 echo ========================================================================
 echo.
 
@@ -28,9 +28,7 @@ REM for /f "tokens=2-4 delims=/ " %%a in ('date /t') do (set mydate=%%c-%%a-%%b)
 REM for /f "tokens=1-2 delims=/:" %%a in ('time /t') do (set mytime=%%a%%b)
 REM set logfile=logs\bot_launcher_%mydate%_%mytime%.log
 
-echo Starting ITrading Bot...
-REM echo Log file: %logfile%
-echo Press Ctrl+C to stop the bot
+echo [%date% %time%] Starting Bot...    Press Ctrl+C to stop the bot
 echo.
 echo ========================================================================
 echo.
@@ -70,10 +68,6 @@ set ITRADING_FOREX_INSTRUMENT=%INSTRUMENT%
 set ITRADING_LOG_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\logs\itrading_%INSTRUMENT%.log
 set ITRADING_TRADE_LOG_FILE=C:\PyCharmProjects\Live_Trading_Bot\itrading\logs\itrading_%INSTRUMENT%_trades.log
 
-REM Optional startup exit-repair toggles.
-REM Set before launch, e.g.:
-REM   set ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR=true
-REM   set ITRADING_RESTART_DAY_EXIT_REPAIR_DRY_RUN=true
 if "%ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR%"=="" set ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR=false
 if "%ITRADING_RESTART_DAY_EXIT_REPAIR_DRY_RUN%"=="" set ITRADING_RESTART_DAY_EXIT_REPAIR_DRY_RUN=false
 if "%ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH%"=="" set ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH=false
@@ -86,17 +80,19 @@ set ITRADING_RESTART_DAY_EXIT_REPAIR_DRY_RUN=false
 set ITRADING_RESTART_DAY_EXIT_REPAIR_PRICE_MODE=ATR_MARKET
 set ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH=false
 
-echo Instrument: %INSTRUMENT%
-echo Params: %ITRADING_PARAMS_FILE%
-echo Log: %ITRADING_LOG_FILE%
-echo Startup DAY Exit Repair: %ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR% ^(dry_run=%ITRADING_RESTART_DAY_EXIT_REPAIR_DRY_RUN% mode=%ITRADING_RESTART_DAY_EXIT_REPAIR_PRICE_MODE%^)
-echo Startup DAY Exit Repair From Cash: %ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH%
-echo Startup DAY Exit Repair Cash Filters: lookback_hours=%ITRADING_RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS% require_expired_day=%ITRADING_RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY%
-echo.
+echo [%date% %time%] Instrument: %INSTRUMENT%
+echo [%date% %time%] Params: %ITRADING_PARAMS_FILE%
+echo [%date% %time%] Log: %ITRADING_LOG_FILE%
+echo [%date% %time%] Startup DAY Exit Repair: %ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR% ^(dry_run=%ITRADING_RESTART_DAY_EXIT_REPAIR_DRY_RUN% mode=%ITRADING_RESTART_DAY_EXIT_REPAIR_PRICE_MODE%^)
+echo [%date% %time%] Startup DAY Exit Repair From Cash: %ITRADING_ENABLE_RESTART_DAY_EXIT_REPAIR_FROM_CASH%
+echo [%date% %time%] Startup DAY Exit Repair Cash Filters: lookback_hours=%ITRADING_RESTART_DAY_EXIT_REPAIR_FROM_CASH_EXPIRED_LOOKBACK_HOURS% require_expired_day=%ITRADING_RESTART_DAY_EXIT_REPAIR_FROM_CASH_REQUIRE_EXPIRED_DAY%
 
 REM Run the bot and log output
 :RESTART
-echo [%date% %time%] Starting bot...
+echo.
+echo ========================================================================
+echo.
+
 cd C:\PyCharmProjects\Live_Trading_Bot
 C:\PyCharmProjects\Live_Trading_Bot\.venv\Scripts\python.exe C:\PyCharmProjects\Live_Trading_Bot\itrading\scripts\run_forex_live.py
 

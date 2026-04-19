@@ -29,7 +29,7 @@ class ITradingLogger:
 
     def _format_message(self, message: str) -> str:
         if self.instrument:
-            return f"[{self.instrument}]{message}"
+            return f"[{self.instrument}] {message}"
         return message
 
     def setup_logging(self):
