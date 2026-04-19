@@ -1936,9 +1936,6 @@ class ITradingStrategy(bt.Strategy):
 
     def next(self):
         """Main strategy logic using volatility expansion channel entry system with 4-phase state machine"""
-        # Detect transition to live trading (end of warm-up phase)
-        if getattr(self, '_in_warmup_phase', False) and self.p.live_trading and len(self) == len(self.data):
-            self._in_warmup_phase = False
         # --- Lifecycle Logger: fires only on the very first next() call ---
         if self.p.lifecycle_logging and not self._first_next_logged:
             _dt0 = bt.num2date(self.data.datetime[0])
@@ -2412,6 +2409,12 @@ class ITradingStrategy(bt.Strategy):
             else:
                 self._lifecycle_debug(
                     f"no-signal | phase4 breakout_status={breakout_status} state={self.entry_state} armed={self.armed_direction}")
+
+        # At the very end of next(), after all logging and logic:
+        # (Moved to the actual end of the method below)
+        # At the very end of next(), after all logic and logging:
+        if getattr(self, '_in_warmup_phase', False) and self.p.live_trading and len(self) == len(self.data):
+            self._in_warmup_phase = False
 
     def _full_entry_signal(self):
         """Return tuple (signal_type, has_signal) for entry constraints.
