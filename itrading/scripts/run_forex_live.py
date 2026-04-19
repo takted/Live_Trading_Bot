@@ -2766,7 +2766,7 @@ async def run_historical_analysis(params):
         instrument_nlv=last_strategy_instrument_nlv,
         open_orders=_get_open_orders_for_instrument(params.get('FOREX_INSTRUMENT', '')),
     )
-    logger.info("--- Historical warm-up complete. A trade report has been generated. ---")
+    logger.info("Historical warm-up complete. A trade report has been generated.")
     return True
 
 async def run_bot():
@@ -2888,7 +2888,7 @@ async def run_bot():
         except Exception:
             last_live_processed_dt = None
 
-    logger.info("--- Transitioning to LIVE MODE. Awaiting new 5-second bar data... ---")
+    logger.info("Transitioning to LIVE MODE. Awaiting new 5-second bar data...")
     contract = Forex(params['FOREX_INSTRUMENT'])
     qualified_live = await _await_with_timeout(
         ib.qualifyContractsAsync(contract),

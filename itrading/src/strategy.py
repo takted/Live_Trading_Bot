@@ -1174,7 +1174,8 @@ class ITradingStrategy(bt.Strategy):
 
     def _tagged_print(self, tag, message):
         line = f"{self._instrument_log_prefix()}[{tag}] {message}"
-        print(line)
+        if self.p.lifecycle_logging:
+            print(line)
         # Capture all tagged print output during warm-up phase
         if getattr(self, '_in_warmup_phase', False):
             if not hasattr(self, 'historical_warmup_log'):
