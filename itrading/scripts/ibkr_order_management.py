@@ -206,9 +206,14 @@ class IBKROrderManagementApp(EWrapper, EClient):
             "warningText": getattr(orderState, "warningText", ""),
             "completedTime": getattr(orderState, "completedTime", ""),
             "completedStatus": getattr(orderState, "completedStatus", ""),
+            "submitTime": getattr(orderState, "submittedTime", getattr(order, "transmitTime", getattr(order, "submitTime", ""))),
             "source": "openOrder",
         }
         self.open_orders[key] = record
+
+        # DEBUG: Print all attributes of orderState to diagnose submit time field
+        if orderId == list(self.open_orders.keys())[0][0] if self.open_orders else True:
+            print("[DEBUG] orderState attributes:", {k: v for k, v in vars(orderState).items()})
 
     def openOrderEnd(self) -> None:  # noqa: N802
         self.requests.open_orders_done.set()
@@ -1007,12 +1012,6 @@ def _build_execution_report_rows(app: IBKROrderManagementApp) -> list[dict[str, 
                 "price": execution.get("price", ""),
                 "cumQty": execution.get("cumQty", ""),
                 "avgPrice": execution.get("avgPrice", ""),
-                "exchange": execution.get("exchange", ""),
-                "liq": execution.get("lastLiquidity", ""),
-                "commission": commission.get("commission", ""),
-                "commissionCcy": commission.get("currency", ""),
-                "commBase": comm_base,
-                "commQuote": comm_quote,
                 "orderRef": execution.get("orderRef", ""),
                 "modelCode": execution.get("modelCode", ""),
                 "pendingRevision": execution.get("pendingPriceRevision", ""),
@@ -1306,6 +1305,8 @@ def _build_targeted_released_pnl_rows(
             continue
 
         submitted_children: list[dict[str, Any]] = []
+        parent_symbol = str(parent.get("symbol", "")).upper()
+        parent_currency = str(parent.get("currency", "")).upper()
         for child in open_rows:
             status = _normalize_status(child.get("status"))
             if status not in {"submitted", "presubmitted"}:
@@ -1315,7 +1316,11 @@ def _build_targeted_released_pnl_rows(
             child_parent_perm_id = int(child.get("parentPermId") or 0)
             match_by_perm = parent_perm_id and child_parent_perm_id and child_parent_perm_id == parent_perm_id
             match_by_order = parent_order_id and child_parent_id and child_parent_id == parent_order_id
-            if match_by_perm or match_by_order:
+
+            # Only match children with the same symbol and currency as the parent
+            child_symbol = str(child.get("symbol", "")).upper()
+            child_currency = str(child.get("currency", "")).upper()
+            if (match_by_perm or match_by_order) and child_symbol == parent_symbol and child_currency == parent_currency:
                 submitted_children.append(child)
 
         if not submitted_children:
@@ -1799,7 +1804,9 @@ def _build_currency_cash_rows(app: IBKROrderManagementApp) -> list[dict[str, Any
                 "netLiquidationByCurrency": netliq_display,
                 "baseCurrency": base_ccy or "BASE",
                 "cashBalanceBase": _format_optional_cash_value(cash_base_value),
-                "netLiquidationByCurrencyBase": _format_optional_cash_value(netliq_base_value),
+                "netLiqByCcy": _format_optional_cash_value(netliq_base_value),
+                "cashInBase": _format_optional_cash_value(cash_base_value),
+                "netLiqBase": _format_optional_cash_value(netliq_base_value),
             }
         )
     return rows
@@ -2038,7 +2045,6 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
                 ("stp/aux", "auxPrice"),
                 ("tif", "tif"),
                 ("status", "status"),
-                ("stale", "stale"),
             ],
         )
     )
