@@ -1917,11 +1917,29 @@ def print_reports(app: IBKROrderManagementApp, fin_instrument_filter: str = "") 
     }
     flattened_pnl_summary = {
         "parentOrderId": "TOTAL",
-        "realizedPnL": _sum_column(flattened_pnl_rows, "realizedPnL"),
-        "realizedPnLGross": _sum_column(flattened_pnl_rows, "realizedPnLGross"),
-        "totalCommission": _sum_column(flattened_pnl_rows, "totalCommission"),
+        "parentPermId": "",
+        "account": "",
+        "symbol": "",
+        "finInstrument": "",
+        "pnlCurrency": "",
+        "side": "",
+        "entryQty": "",
+        "entryPrice": "",
+        "entryComm": "",
+        "exitQty": "",
+        "exitPrice": "",
+        "exitComm": "",
+        "realizedPnL": "",
+        "realizedPnLUSD": "",
+        "realizedProfit": "",
         "realizedProfitUSD": _sum_column(flattened_pnl_rows, "realizedProfitUSD"),
+        "realizedLoss": "",
         "realizedLossUSD": _sum_column(flattened_pnl_rows, "realizedLossUSD"),
+        "realizedPnLGross": "",
+        "realizedPnLGrossUSD": "",
+        "totalCommission": "",
+        "RlzPrUSD": _sum_column(flattened_pnl_rows, "realizedProfitUSD"),
+        "RlzLsUSD": _sum_column(flattened_pnl_rows, "realizedLossUSD"),
     }
 
     print("\n=== IBKR ORDER / EXECUTION ANALYTICS REPORT ===")
