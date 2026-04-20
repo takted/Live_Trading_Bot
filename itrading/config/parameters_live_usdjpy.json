@@ -99,9 +99,9 @@
     "account_leverage": 30.0,
     "verbose_debug": false,
     "print_signals": true,
-    "print_summary": false,
+    "print_summary": true,
     "export_trade_reports": true,
-    "lifecycle_logging": false,
+    "lifecycle_logging": true,
     "enable_eod_flatten": true
   }
 }

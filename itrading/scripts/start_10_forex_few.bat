@@ -18,14 +18,10 @@ where wt >nul 2>&1
 if errorlevel 1 (
     echo [WARN] Windows Terminal ^(wt.exe^) not found. Falling back to separate cmd windows.
     start "USDCAD" cmd /k "\"%RUNNER%\" USDCAD"
-    start "GBPJPY" cmd /k "\"%RUNNER%\" GBPJPY"
-    start "EURJPY" cmd /k "\"%RUNNER%\" EURJPY"
-    start "USDCHF" cmd /k "\"%RUNNER%\" USDCHF"
+    start "USDJPY" cmd /k "\"%RUNNER%\" USDJPY"
     exit /b 0
 )
 
 wt -w 0 ^
   new-tab --title "USDCAD" cmd /k "\"%RUNNER%\" USDCAD" ; ^
-  new-tab --title "GBPJPY" cmd /k "\"%RUNNER%\" GBPJPY" ; ^
-  new-tab --title "EURJPY" cmd /k "\"%RUNNER%\" EURJPY" ; ^
-  new-tab --title "USDCHF" cmd /k "\"%RUNNER%\" USDCHF"
+  new-tab --title "USDJPY" cmd /k "\"%RUNNER%\" USDJPY"
