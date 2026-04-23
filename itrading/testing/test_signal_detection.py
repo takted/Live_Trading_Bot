@@ -1,3 +1,9 @@
+
+# Ensure project root is in sys.path for package imports
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 """
 MT5 Strategy Signal Tester
 ==========================
@@ -33,16 +39,24 @@ def get_market_data_ibkr(conn, symbol, bars=200, duration='2 D', bar_size='5 min
     wrapper.historical_data = []
     wrapper.historical_data_end_event.clear()
 
-    # IBKR forex contract
-    if '.' in symbol:
-        base, quote = symbol.split('.')
-    else:
-        base, quote = symbol[:3], symbol[3:]
+    # IBKR contract handling
     contract = Contract()
-    contract.symbol = base
-    contract.secType = 'CASH'
-    contract.exchange = 'IDEALPRO'
-    contract.currency = quote
+    if symbol.upper() in ['XAUUSD', 'XAGUSD']:
+        # Metals (Gold/Silver)
+        contract.symbol = symbol[:3]
+        contract.secType = 'CMDTY'
+        contract.exchange = 'SMART'
+        contract.currency = symbol[3:]
+    else:
+        # Forex
+        if '.' in symbol:
+            base, quote = symbol.split('.')
+        else:
+            base, quote = symbol[:3], symbol[3:]
+        contract.symbol = base
+        contract.secType = 'CASH'
+        contract.exchange = 'IDEALPRO'
+        contract.currency = quote
 
     # IBKR reqHistoricalData
     endDateTime = ''  # now
@@ -74,8 +88,11 @@ def get_market_data_ibkr(conn, symbol, bars=200, duration='2 D', bar_size='5 min
         print(f"❌ No historical data for {symbol}")
         return None
     df = pd.DataFrame(bars)
-    # IBKR returns 'date' as string, convert to datetime
-    df['time'] = pd.to_datetime(df['date'])
+    # IBKR returns 'date' as string, e.g. '20260421 17:15:00 US/Eastern'
+    # Remove timezone for parsing, fallback to UTC if needed
+    if 'date' in df.columns:
+        # Remove trailing timezone (e.g. ' US/Eastern') for parsing
+        df['time'] = pd.to_datetime(df['date'].str.replace(r' [A-Z]+/[A-Z]+$', '', regex=True), format='%Y%m%d %H:%M:%S', errors='coerce')
     return df
 
 def calculate_emas(df, periods):
