@@ -4651,6 +4651,18 @@ class ITradingStrategyAUDUSD(ITradingStrategy):
         # Add more filters as needed (e.g., RSI)
     )
 
+    def _full_entry_signal(self):
+        """Override: Invert LONG/SHORT signals for AUDUSD for testing purposes."""
+        direction, has_signal = super()._full_entry_signal()
+        if not has_signal:
+            return (direction, has_signal)
+        # Invert only if a signal is present
+        if direction == 'LONG':
+            return ('SHORT', True)
+        elif direction == 'SHORT':
+            return ('LONG', True)
+        return (direction, has_signal)
+
     def _calculate_exit_levels(self, signal_direction, atr_now, bar_low, bar_high, entry_price):
         """AUDUSD: Anchor both SL and TP from entry price, use standardized ATR multipliers."""
         if signal_direction == 'LONG':

@@ -5,61 +5,78 @@ Test script to validate MT5 strategy signal generation and identify why no entri
 This will run the strategies against current market data and show exactly what's happening.
 """
 
-import sys
-import os
-import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import json
+from datetime import datetime
+
+from itrading.src.logger import ITradingLogger
+from itrading.src.connection import ITradingConnection
+from ibapi.contract import Contract
 
 # Add strategies path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'strategies'))
+# sys.path.append(os.path.join(os.path.dirname(__file__), 'strategies'))
 
-def connect_mt5():
-    """Connect to MT5 with credentials"""
-    try:
-        # Load credentials
-        with open('config/mt5_credentials.json', 'r') as f:
-            credentials = json.load(f)
-        
-        if not mt5.initialize():
-            print("❌ MT5 initialization failed")
-            return False
-            
-        # Login
-        login_result = mt5.login(
-            credentials['login'],
-            password=credentials['password'],
-            server=credentials['server']
-        )
-        
-        if not login_result:
-            print(f"❌ MT5 login failed: {mt5.last_error()}")
-            return False
-            
-        print(f"✅ Connected to MT5: {credentials['server']}")
-        return True
-        
-    except Exception as e:
-        print(f"❌ MT5 connection error: {e}")
-        return False
-
-def get_market_data(symbol, timeframe, bars=100):
-    """Get recent market data for analysis"""
-    try:
-        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
-        if rates is None:
-            print(f"❌ Failed to get data for {symbol}")
-            return None
-            
-        df = pd.DataFrame(rates)
-        df['time'] = pd.to_datetime(df['time'], unit='s')
-        return df
-        
-    except Exception as e:
-        print(f"❌ Data retrieval error for {symbol}: {e}")
+def connect_ibkr():
+    """Connect to IBKR using ITradingConnection"""
+    logger = ITradingLogger()
+    conn = ITradingConnection(logger)
+    success, msg = conn.connect()
+    if not success:
+        print(f"❌ IBKR connection failed: {msg}")
         return None
+    print("✅ Connected to IBKR")
+    return conn
+
+def get_market_data_ibkr(conn, symbol, bars=200, duration='2 D', bar_size='5 mins'):
+    """Get recent market data from IBKR for analysis (returns DataFrame)"""
+    wrapper = conn.client
+    wrapper.historical_data = []
+    wrapper.historical_data_end_event.clear()
+
+    # IBKR forex contract
+    if '.' in symbol:
+        base, quote = symbol.split('.')
+    else:
+        base, quote = symbol[:3], symbol[3:]
+    contract = Contract()
+    contract.symbol = base
+    contract.secType = 'CASH'
+    contract.exchange = 'IDEALPRO'
+    contract.currency = quote
+
+    # IBKR reqHistoricalData
+    endDateTime = ''  # now
+    whatToShow = 'MIDPOINT'
+    useRTH = 0
+    formatDate = 1
+    keepUpToDate = False
+    reqId = 9000
+    wrapper.historical_data = []
+    wrapper.historical_data_end_event.clear()
+    wrapper.reqHistoricalData(
+        reqId,
+        contract,
+        endDateTime,
+        duration,
+        bar_size,
+        whatToShow,
+        useRTH,
+        formatDate,
+        keepUpToDate,
+        []
+    )
+    # Wait for data
+    if not wrapper.historical_data_end_event.wait(timeout=15):
+        print(f"❌ Timeout waiting for historical data for {symbol}")
+        return None
+    bars = wrapper.historical_data
+    if not bars:
+        print(f"❌ No historical data for {symbol}")
+        return None
+    df = pd.DataFrame(bars)
+    # IBKR returns 'date' as string, convert to datetime
+    df['time'] = pd.to_datetime(df['date'])
+    return df
 
 def calculate_emas(df, periods):
     """Calculate EMAs for strategy analysis"""
@@ -131,7 +148,11 @@ def analyze_symbol(symbol):
     print("=" * 50)
     
     # Get market data
-    df = get_market_data(symbol, mt5.TIMEFRAME_M5, 200)
+    global ibkr_conn
+    if ibkr_conn is None:
+        print("❌ IBKR connection not established.")
+        return
+    df = get_market_data_ibkr(ibkr_conn, symbol, bars=200, duration='2 D', bar_size='5 mins')
     if df is None:
         return
     
@@ -231,32 +252,35 @@ def analyze_symbol(symbol):
 
 def main():
     """Main analysis function"""
-    print("🔍 MT5 STRATEGY SIGNAL ANALYSIS")
+    print("🔍 IBKR STRATEGY SIGNAL ANALYSIS")
     print("=" * 60)
-    print("Testing why no entries are appearing in MT5...")
-    
-    if not connect_mt5():
+    print("Testing why no entries are appearing in IBKR...")
+
+    global ibkr_conn
+    ibkr_conn = connect_ibkr()
+    if not ibkr_conn:
         return
-    
+
     # Test symbols from your strategies
     symbols = ['EURUSD', 'GBPUSD', 'AUDUSD', 'USDCHF', 'XAUUSD', 'XAGUSD']
-    
+
     results = []
     for symbol in symbols:
         try:
+            # IBKR expects e.g. 'EURUSD' as 'EUR.USD' for some APIs, but our get_market_data_ibkr handles both
             result = analyze_symbol(symbol)
             if result:
                 results.append(result)
         except Exception as e:
             print(f"❌ Error analyzing {symbol}: {e}")
-    
+
     # Summary
     print(f"\n📋 SUMMARY")
     print("=" * 60)
-    
+
     total_signals = sum(r['signals_found'] for r in results)
     print(f"Total Recent Signals Found: {total_signals}")
-    
+
     if total_signals == 0:
         print("\n❌ NO SIGNALS DETECTED ON ANY SYMBOL!")
         print("\nPossible reasons:")
@@ -265,7 +289,7 @@ def main():
         print("3. Not in trading hours (21:00-03:00 UTC)")
         print("4. ATR volatility requirements not met")
         print("5. EMAs are not crossing (no breakouts happening)")
-        
+
         print("\n💡 SUGGESTIONS:")
         print("1. Lower ATR thresholds for more sensitive entries")
         print("2. Expand trading hours or disable time filter")
@@ -277,9 +301,11 @@ def main():
         for result in results:
             if result['signals_found'] > 0:
                 print(f"  {result['symbol']}: {result['signals_found']} signals | Trend: {result['trend']}")
-    
-    mt5.shutdown()
+
+    ibkr_conn.disconnect()
     print(f"\n🏁 Analysis complete!")
+
+ibkr_conn = None
 
 if __name__ == "__main__":
     main()
