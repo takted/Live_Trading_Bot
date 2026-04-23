@@ -41,11 +41,28 @@ async def _graceful_flatten_positions_and_orders(instrument: str, params: dict):
     # Cancel all open LMT/STP orders
     open_orders = _get_open_orders_for_instrument(instrument)
     for order in open_orders:
+        cancelled = False
+        # Try to cancel using integer order_id first
         try:
-            ib.cancelOrder(order['order_obj'])
-            logger.info(f"[EOD-FLAT] Cancelled order {order['order_id']} for {instrument}")
+            order_id = order.get('order_id')
+            if order_id is not None:
+                ib.cancelOrder(order_id)
+                logger.info(f"[EOD-FLAT] Cancelled order by order_id {order_id} for {instrument}")
+                cancelled = True
         except Exception as exc:
-            logger.warning(f"[EOD-FLAT] Failed to cancel order {order['order_id']}: {exc}")
+            logger.warning(f"[EOD-FLAT] Failed to cancel order by order_id {order.get('order_id')}: {exc}")
+        # Fallback: try to cancel using order_obj if available and not already cancelled
+        if not cancelled:
+            try:
+                order_obj = order.get('order_obj')
+                if order_obj is not None:
+                    ib.cancelOrder(order_obj)
+                    logger.info(f"[EOD-FLAT] Cancelled order by order_obj for order_id {order.get('order_id')} for {instrument}")
+                    cancelled = True
+            except Exception as exc:
+                logger.warning(f"[EOD-FLAT] Failed to cancel order by order_obj for order_id {order.get('order_id')}: {exc}")
+        if not cancelled:
+            logger.error(f"[EOD-FLAT] Could not cancel order {order.get('order_id')} for {instrument} by either method.")
     # Close open position if any
     positions = ib.positions()
     for pos in positions:
