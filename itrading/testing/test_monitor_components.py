@@ -4,6 +4,10 @@ Test MT5 Trading Monitor Components
 Quick test to verify all components are working
 """
 
+# This file previously tested MT5 trading monitor components.
+# MT5 is no longer supported in this project. Please use IBKR test scripts instead.
+print("This test is deprecated. Use IBKR-based test scripts.")
+
 import sys
 import os
 import importlib.util

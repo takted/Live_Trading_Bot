@@ -485,5 +485,10 @@ def main():
     
     print("=" * 60)
 
+# This file previously performed deep stress tests for MT5 trading monitor.
+# MT5 is no longer supported in this project. Please use IBKR test scripts instead.
+print("This test is deprecated. Use IBKR-based test scripts.")
+
 if __name__ == "__main__":
     main()
+

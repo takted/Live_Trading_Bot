@@ -5,6 +5,10 @@ Tests order execution with correct filling mode detection
 import MetaTrader5 as mt5
 from datetime import datetime
 
+# This file previously tested MT5 order execution.
+# MT5 is no longer supported in this project. Please use IBKR test scripts instead.
+print("This test is deprecated. Use IBKR-based test scripts.")
+
 def test_order_execution(symbol="XAGUSD", volume=0.01):
     """Test order execution with minimal risk"""
     

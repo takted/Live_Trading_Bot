@@ -296,9 +296,4 @@ if __name__ == "__main__":
     print("  - Filling mode detection (FOK/IOC/RETURN)")
     print("\n⚠️ This will place a REAL order with REAL money!")
     
-    success = test_real_bot_entry("XAGUSD")
-    
-    if success:
-        print("\n✅ Test PASSED - Bot is ready for live trading!")
-    else:
-        print("\n❌ Test FAILED - Check errors above")
+    print("This test is deprecated. Use IBKR-based test scripts.")
