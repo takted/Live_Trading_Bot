@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Deep Stress Test for MT5 Trading Monitor
 Comprehensive testing of all system components under load
 """
 
