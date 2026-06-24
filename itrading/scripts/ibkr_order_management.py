@@ -210,10 +210,6 @@ class IBKROrderManagementApp(EWrapper, EClient):
         }
         self.open_orders[key] = record
 
-        # DEBUG: Print all attributes of orderState to diagnose submit time field
-        if orderId == list(self.open_orders.keys())[0][0] if self.open_orders else True:
-            print("[DEBUG] orderState attributes:", {k: v for k, v in vars(orderState).items()})
-
     def openOrderEnd(self) -> None:  # noqa: N802
         self.requests.open_orders_done.set()
 
@@ -1177,15 +1173,11 @@ def _is_completed_parent_filled(row: dict[str, Any]) -> bool:
     parent_perm_id = int(row.get("parentPermId") or 0)
     order_type = str(row.get("orderType") or "").strip().upper()
     if parent_id != 0 or (parent_perm_id != 0 and order_type != "MKT"):
-        print(f"[DEBUG][PARENT_FILLED] Skipping as child: orderId={row.get('orderId')} parentId={parent_id} parentPermId={parent_perm_id} orderType={order_type}")
         return False
 
     status_text = str(row.get("status") or "").strip().lower()
     completed_status_text = str(row.get("completedStatus") or "").strip().lower()
-    filled = "filled" in status_text or "filled" in completed_status_text
-    if not filled:
-        print(f"[DEBUG][PARENT_FILLED] Not filled: orderId={row.get('orderId')} status={status_text} completedStatus={completed_status_text}")
-    return filled
+    return "filled" in status_text or "filled" in completed_status_text
 
 
 def _is_completed_child_filled(row: dict[str, Any]) -> bool:
@@ -1284,29 +1276,16 @@ def _build_targeted_released_pnl_rows(
 
         parent_order_id = int(parent.get("orderId") or 0)
         parent_perm_id = int(parent.get("permId") or 0)
-        parent_qty = _to_float(parent.get("totalQuantity"))
-        if parent_qty is None or parent_qty <= 0:
+        parent_qty, entry_price, entry_commission = _summarize_order_fills(
+            parent,
+            execution_by_perm=execution_by_perm,
+            execution_by_order=execution_by_order,
+        )
+        if parent_qty is None or parent_qty <= 0 or entry_price is None:
             continue
 
         direction = _extract_parent_direction(parent)
         if direction == 0:
-            continue
-
-        parent_execs = execution_by_perm.get(parent_perm_id, []) if parent_perm_id else []
-        if not parent_execs and parent_order_id:
-            parent_execs = execution_by_order.get(parent_order_id, [])
-
-        entry_price = None
-        entry_commission = 0.0
-        if parent_execs:
-            cum_sorted = sorted(
-                parent_execs,
-                key=lambda row: _to_float(row.get("cumQty")) or 0.0,
-                reverse=True,
-            )
-            entry_price = _to_float(cum_sorted[0].get("avgPrice")) or _to_float(cum_sorted[0].get("price"))
-            entry_commission = sum(_extract_execution_commission_quote(exec_row) for exec_row in parent_execs)
-        if entry_price is None:
             continue
 
         submitted_children: list[dict[str, Any]] = []
@@ -1402,7 +1381,7 @@ def _build_targeted_released_pnl_rows(
 def _build_actual_pnl_rows(
     completed_rows: list[dict[str, Any]],
     execution_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     execution_by_perm: dict[int, list[dict[str, Any]]] = {}
     execution_by_order: dict[int, list[dict[str, Any]]] = {}
     for execution in execution_rows:
@@ -1522,34 +1501,25 @@ def _build_actual_pnl_rows(
             # --- FLATTEN SCENARIO: No LMT/STP children, look for paired MKT entry/exit ---
             for exit_row in completed_rows:
                 if exit_row is parent:
-                    print(f"[DEBUG][FLATTEN] Skipping self-pair: parent_order_id={parent.get('orderId')} exit_order_id={exit_row.get('orderId')}")
                     continue
                 if not _is_completed_parent_filled(exit_row):
-                    print(f"[DEBUG][FLATTEN] Exit not filled: exit_order_id={exit_row.get('orderId')}")
                     continue
                 exit_direction = _extract_parent_direction(exit_row)
                 if exit_direction == 0 or exit_direction == direction:
-                    print(f"[DEBUG][FLATTEN] Exit direction invalid or same as parent: parent_order_id={parent.get('orderId')} exit_order_id={exit_row.get('orderId')} exit_direction={exit_direction} parent_direction={direction}")
                     continue
                 parent_qty = _to_float(parent.get("totalQuantity"))
                 exit_qty = _to_float(exit_row.get("totalQuantity"))
                 if not (parent.get("symbol", "") == exit_row.get("symbol", "")):
-                    print(f"[DEBUG][FLATTEN] Symbol mismatch: parent={parent.get('symbol','')} exit={exit_row.get('symbol','')}")
                     continue
                 if not (parent.get("currency", "") == exit_row.get("currency", "")):
-                    print(f"[DEBUG][FLATTEN] Currency mismatch: parent={parent.get('currency','')} exit={exit_row.get('currency','')}")
                     continue
                 if parent_qty is None or exit_qty is None or abs(parent_qty - exit_qty) >= 1e-6:
-                    print(f"[DEBUG][FLATTEN] Qty mismatch: parent_qty={parent_qty} exit_qty={exit_qty}")
                     continue
                 if not (parent.get("account", "") == exit_row.get("account", "")):
-                    print(f"[DEBUG][FLATTEN] Account mismatch: parent={parent.get('account','')} exit={exit_row.get('account','')}")
                     continue
                 if not (str(parent.get("orderType", "")).strip().upper() == "MKT"):
-                    print(f"[DEBUG][FLATTEN] Parent orderType not MKT: {parent.get('orderType','')}")
                     continue
                 if not (str(exit_row.get("orderType", "")).strip().upper() == "MKT"):
-                    print(f"[DEBUG][FLATTEN] Exit orderType not MKT: {exit_row.get('orderType','')}")
                     continue
                 exit_qty2, exit_price, exit_commission = _summarize_order_fills(
                     exit_row,
@@ -1557,14 +1527,11 @@ def _build_actual_pnl_rows(
                     execution_by_order=execution_by_order,
                 )
                 if exit_qty2 is None or exit_qty2 <= 0 or exit_price is None:
-                    print(f"[DEBUG][FLATTEN] Exit fill invalid: exit_qty={exit_qty2} exit_price={exit_price}")
                     continue
                 if parent_order_id > int(exit_row.get("orderId") or 0):
-                    print(f"[DEBUG][FLATTEN] Parent orderId > exit orderId: parent_order_id={parent_order_id} exit_order_id={exit_row.get('orderId')}")
                     continue
                 realized_pnl = (exit_qty * exit_price - entry_qty * entry_price) * direction
                 total_commission = entry_commission + exit_commission
-                print(f"[DEBUG][FLATTEN] PAIRED: parent_order_id={parent_order_id} exit_order_id={exit_row.get('orderId')} qty={entry_qty} price_in={entry_price} price_out={exit_price}")
                 flatten_rows.append(
                     {
                         "parentOrderId": f"{parent_order_id}/{exit_row.get('orderId','')} (FLATTEN)",
@@ -1587,12 +1554,6 @@ def _build_actual_pnl_rows(
                 )
                 break
 
-    print(f"[DEBUG] Final ACTUAL P&L regular rows: {len(regular_rows)}")
-    print(f"[DEBUG] Final FLATTENED P&L rows: {len(flatten_rows)}")
-    if regular_rows:
-        print(f"[DEBUG] Regular Output sample: {regular_rows[:2]}")
-    if flatten_rows:
-        print(f"[DEBUG] Flattened Output sample: {flatten_rows[:2]}")
     return regular_rows, flatten_rows
 
 
@@ -2415,4 +2376,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

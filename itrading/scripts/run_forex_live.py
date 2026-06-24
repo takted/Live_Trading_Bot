@@ -40,29 +40,27 @@ async def _graceful_flatten_positions_and_orders(instrument: str, params: dict):
         return
     # Cancel all open LMT/STP orders
     open_orders = _get_open_orders_for_instrument(instrument)
-    for order in open_orders:
+    for order_info in open_orders:
+        order_id = order_info.get('order_id')
+        if order_id is None:
+            continue
+
         cancelled = False
-        # Try to cancel using integer order_id first
         try:
-            order_id = order.get('order_id')
-            if order_id is not None:
-                ib.cancelOrder(order_id)
+            # Attempt to cancel using the integer order_id
+            order_to_cancel = next((o for o in ib.openOrders() if o.orderId == order_id), None)
+            if order_to_cancel:
+                ib.cancelOrder(order_to_cancel)
                 logger.info(f"[EOD-FLAT] Cancelled order by order_id {order_id} for {instrument}")
                 cancelled = True
+            else:
+                logger.warning(f"[EOD-FLAT] Could not find order object for order_id {order_id}")
         except Exception as exc:
-            logger.warning(f"[EOD-FLAT] Failed to cancel order by order_id {order.get('order_id')}: {exc}")
-        # Fallback: try to cancel using order_obj if available and not already cancelled
+            logger.warning(f"[EOD-FLAT] Failed to cancel order by order_id {order_id}: {exc}")
+
         if not cancelled:
-            try:
-                order_obj = order.get('order_obj')
-                if order_obj is not None:
-                    ib.cancelOrder(order_obj)
-                    logger.info(f"[EOD-FLAT] Cancelled order by order_obj for order_id {order.get('order_id')} for {instrument}")
-                    cancelled = True
-            except Exception as exc:
-                logger.warning(f"[EOD-FLAT] Failed to cancel order by order_obj for order_id {order.get('order_id')}: {exc}")
-        if not cancelled:
-            logger.error(f"[EOD-FLAT] Could not cancel order {order.get('order_id')} for {instrument} by either method.")
+            logger.error(f"[EOD-FLAT] Could not cancel order {order_id} for {instrument} by any method.")
+            
     # Close open position if any
     positions = ib.positions()
     for pos in positions:
