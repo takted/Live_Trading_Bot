@@ -1,0 +1,56 @@
+# All-Forex AWS Scheduling Plan
+
+## Problem
+You want to deploy and schedule **all forex instruments** in the project on AWS using the UTC windows previously defined.
+
+## Proposed approach
+- Use **UTC** for all schedules.
+- Run **one scheduled job per instrument**.
+- Reuse the existing `parameters_live_*.json` files and `ITRADING_FOREX_INSTRUMENT` override.
+- Prefer a clean AWS runtime with isolated jobs, centralized logs, and externalized secrets.
+
+## Working assumptions
+- Jobs are for live trading / signal generation.
+- The current instrument list is:
+  `AUDUSD, EURUSD, EURGBP, EURJPY, GBPUSD, GBPJPY, NZDUSD, USDCAD, USDCHF, USDJPY`
+- Each instrument should only run during its own active liquidity window.
+
+## Proposed UTC schedule map
+- **AUDUSD:** 21:00-06:00, Monday-Friday
+- **NZDUSD:** 21:00-06:00, Monday-Friday
+- **USDJPY:** 23:00-09:00, Monday-Friday
+- **EURJPY:** 00:00-09:30, Monday-Friday
+- **GBPJPY:** 00:00-09:30, Monday-Friday
+- **EURUSD:** 07:00-16:30, Monday-Friday
+- **GBPUSD:** 07:00-16:30, Monday-Friday
+- **USDCHF:** 07:00-16:30, Monday-Friday
+- **EURGBP:** 07:00-12:30, Monday-Friday
+- **USDCAD:** 12:00-20:30, Monday-Friday
+
+## Recommended AWS architecture
+- **EventBridge Scheduler** for start/stop windows.
+- **ECS Fargate** for each instrument job.
+- **ECR** for the container image.
+- **CloudWatch Logs** for logs and alerts.
+- **Secrets Manager** or **SSM Parameter Store** for credentials and runtime settings.
+
+## Implementation steps
+1. Review every live forex config and confirm the instrument set.
+2. Define the UTC schedule for each pair.
+3. Decide whether to use one shared image with per-job env vars.
+4. Create the container image and push it to ECR.
+5. Create ECS task definitions / services for each instrument.
+6. Configure EventBridge schedules for each trading window.
+7. Wire credentials, logs, and alerting.
+8. Validate start/stop, trading-hours compliance, and isolation between jobs.
+
+## Todo list
+- Review the current all-pairs live configuration files.
+- Finalize the UTC schedule for each instrument.
+- Design the AWS deployment layout for multiple jobs.
+- Build and publish the deployment assets.
+- Validate the deployed jobs end to end.
+
+## Notes
+- The runner already loads `parameters_live_<instrument>.json` from `ITRADING_FOREX_INSTRUMENT`.
+- The schedule should control runtime windows; the app itself already has trading-hour and EOD flatten logic.
