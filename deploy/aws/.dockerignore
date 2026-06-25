@@ -1,0 +1,15 @@
+.git
+.idea
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+logs/
+itrading/config/itrading_credentials.json
+session-state/
+AppData/
+tmp/
+build/
+dist/

@@ -1,0 +1,109 @@
+{
+  "timezone": "UTC",
+  "deployment_model": "ec2-docker-host-network",
+  "broker_host": "127.0.0.1",
+  "broker_port": 7497,
+  "cadence_minutes": 5,
+  "instruments": [
+    {
+      "instrument": "AUDUSD",
+      "config_file": "itrading/config/parameters_live_audusd.json",
+      "start_time": "21:00",
+      "end_time": "06:00",
+      "start_cron": "cron(0 21 ? * MON-FRI *)",
+      "stop_cron": "cron(0 6 ? * TUE-SAT *)",
+      "crosses_midnight": true,
+      "ib_client_id": 11
+    },
+    {
+      "instrument": "NZDUSD",
+      "config_file": "itrading/config/parameters_live_nzdusd.json",
+      "start_time": "21:00",
+      "end_time": "06:00",
+      "start_cron": "cron(0 21 ? * MON-FRI *)",
+      "stop_cron": "cron(0 6 ? * TUE-SAT *)",
+      "crosses_midnight": true,
+      "ib_client_id": 19
+    },
+    {
+      "instrument": "USDJPY",
+      "config_file": "itrading/config/parameters_live_usdjpy.json",
+      "start_time": "23:00",
+      "end_time": "09:00",
+      "start_cron": "cron(0 23 ? * MON-FRI *)",
+      "stop_cron": "cron(0 9 ? * TUE-SAT *)",
+      "crosses_midnight": true,
+      "ib_client_id": 18
+    },
+    {
+      "instrument": "EURJPY",
+      "config_file": "itrading/config/parameters_live_eurjpy.json",
+      "start_time": "00:00",
+      "end_time": "09:30",
+      "start_cron": "cron(0 0 ? * MON-FRI *)",
+      "stop_cron": "cron(30 9 ? * MON-FRI *)",
+      "crosses_midnight": false,
+      "ib_client_id": 14
+    },
+    {
+      "instrument": "GBPJPY",
+      "config_file": "itrading/config/parameters_live_gbpjpy.json",
+      "start_time": "00:00",
+      "end_time": "09:30",
+      "start_cron": "cron(0 0 ? * MON-FRI *)",
+      "stop_cron": "cron(30 9 ? * MON-FRI *)",
+      "crosses_midnight": false,
+      "ib_client_id": 20
+    },
+    {
+      "instrument": "EURUSD",
+      "config_file": "itrading/config/parameters_live_eurusd.json",
+      "start_time": "07:00",
+      "end_time": "16:30",
+      "start_cron": "cron(0 7 ? * MON-FRI *)",
+      "stop_cron": "cron(30 16 ? * MON-FRI *)",
+      "crosses_midnight": false,
+      "ib_client_id": 13
+    },
+    {
+      "instrument": "GBPUSD",
+      "config_file": "itrading/config/parameters_live_gbpusd.json",
+      "start_time": "07:00",
+      "end_time": "16:30",
+      "start_cron": "cron(0 7 ? * MON-FRI *)",
+      "stop_cron": "cron(30 16 ? * MON-FRI *)",
+      "crosses_midnight": false,
+      "ib_client_id": 15
+    },
+    {
+      "instrument": "USDCHF",
+      "config_file": "itrading/config/parameters_live_usdchf.json",
+      "start_time": "07:00",
+      "end_time": "16:30",
+      "start_cron": "cron(0 7 ? * MON-FRI *)",
+      "stop_cron": "cron(30 16 ? * MON-FRI *)",
+      "crosses_midnight": false,
+      "ib_client_id": 16
+    },
+    {
+      "instrument": "EURGBP",
+      "config_file": "itrading/config/parameters_live_eurgbp.json",
+      "start_time": "07:00",
+      "end_time": "12:30",
+      "start_cron": "cron(0 7 ? * MON-FRI *)",
+      "stop_cron": "cron(30 12 ? * MON-FRI *)",
+      "crosses_midnight": false,
+      "ib_client_id": 12
+    },
+    {
+      "instrument": "USDCAD",
+      "config_file": "itrading/config/parameters_live_usdcad.json",
+      "start_time": "12:00",
+      "end_time": "20:30",
+      "start_cron": "cron(0 12 ? * MON-FRI *)",
+      "stop_cron": "cron(30 20 ? * MON-FRI *)",
+      "crosses_midnight": false,
+      "ib_client_id": 17
+    }
+  ]
+}

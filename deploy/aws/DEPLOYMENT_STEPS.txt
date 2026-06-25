@@ -1,0 +1,35 @@
+AWS DEPLOYMENT STEPS FOR ALL FOREX INSTRUMENTS
+
+1. Build the Docker image from the repo root:
+   docker build -f deploy/aws/Dockerfile -t itrading-forex:latest .
+
+2. Push the image to Amazon ECR:
+   - Create an ECR repository.
+   - Tag the image with the ECR URI.
+   - Push using docker login / push.
+
+3. Provision the runtime host:
+   - Use one EC2 Linux instance.
+   - Install Docker.
+   - Run IB Gateway or TWS on the same host.
+   - Keep the bot container on host networking so 127.0.0.1 works.
+
+4. Supply secrets:
+   - Store IB credentials in AWS Secrets Manager or SSM Parameter Store.
+   - Mount or render itrading/config/itrading_credentials.json at runtime.
+
+5. Run one container per instrument:
+   - Set ITRADING_FOREX_INSTRUMENT to the pair name.
+   - Use the matching parameters_live_<instrument>.json file.
+   - Use unique IB client IDs per instrument.
+
+6. Create EventBridge schedules:
+   - Use the start_cron and stop_cron values from deploy/aws/forex_schedule_manifest.json.
+   - Start schedule launches the container/service.
+   - Stop schedule stops it cleanly.
+
+7. Verify:
+   - Logs show the correct instrument.
+   - The bot loads the correct parameters file.
+   - Trading only occurs inside the UTC window.
+   - Stop jobs shut down cleanly.
