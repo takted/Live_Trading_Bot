@@ -1,0 +1,80 @@
+AWS CONSOLE CHECKLIST - ALL FOREX INSTRUMENTS
+
+Architecture used:
+- One always-on EC2 Linux host
+- IB Gateway/TWS on the same host
+- One Docker container per instrument
+- EventBridge Scheduler to start/stop each container by UTC window
+- CloudWatch Logs for container logs
+
+1. Create the ECR repository
+   - Open AWS Console -> ECR -> Repositories -> Create repository
+   - Name: itrading-forex
+   - Private repository: enabled
+
+2. Create IAM access
+   - Create or choose an IAM role for EC2
+   - Attach:
+     - AmazonSSMManagedInstanceCore
+     - CloudWatchAgentServerPolicy
+     - AmazonEC2ContainerRegistryReadOnly
+   - If using EventBridge Scheduler to call SSM, allow:
+     - ssm:SendCommand
+     - ec2:DescribeInstances
+
+3. Launch the EC2 instance
+   - Ubuntu 22.04 or Amazon Linux 2023
+   - Suggested size: t3.large or better
+   - Attach the IAM role
+   - Security group:
+     - SSH 22 from your IP
+     - No public IB ports
+   - Keep the instance always on
+
+4. Install runtime software on EC2
+   - Docker
+   - AWS CLI v2
+   - IB Gateway or TWS
+   - CloudWatch agent (optional)
+
+5. Configure IB Gateway/TWS
+   - Enable API connections
+   - Port: 7497
+   - Allow localhost only
+   - Set auto-start at boot if possible
+
+6. Store credentials securely
+   - Put IB credentials in Secrets Manager or SSM Parameter Store
+   - Copy them to `itrading/config/itrading_credentials.json` on the EC2 host
+   - Do not bake them into the Docker image
+
+7. Build and push the Docker image
+   - Run the PowerShell deployment script from your repo
+   - It will build, tag, and push the image to ECR
+
+8. Pull the image on EC2
+   - Sign in to ECR from EC2
+   - Pull the image
+
+9. Start one container per instrument
+   - Use `--network host`
+   - Set `ITRADING_FOREX_INSTRUMENT` per container
+   - Use unique container names
+   - Keep one IB client ID per instrument
+
+10. Add EventBridge Scheduler rules
+    - Start and stop each container using UTC windows
+    - Use SSM Run Command against the EC2 instance
+    - Start schedule should run at session open
+    - Stop schedule should run at session close
+
+11. Validate
+    - Logs show the correct instrument name
+    - The correct `parameters_live_<instrument>.json` file is loaded
+    - Trading only happens during the UTC window
+    - Container stops cleanly at session close
+
+12. Monitor
+    - Check CloudWatch logs
+    - Check IB Gateway/TWS is connected
+    - Check that no two containers use the same IB client ID
