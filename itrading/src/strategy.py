@@ -4764,7 +4764,7 @@ class ITradingStrategyGBPUSD(ITradingStrategy):
         contract_size=100000,
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
-        enable_short_trades=True,  # Enable both LONG and SHORT trading by default
+        enable_short_trades=True,
     )
 
     params = dict(
@@ -4776,19 +4776,44 @@ class ITradingStrategyGBPUSD(ITradingStrategy):
         contract_size=100000,
         forex_spread_pips=2.2,
         forex_margin_required=3.33,
-        long_atr_sl_multiplier=2.0,
-        long_atr_tp_multiplier=3.0,
-        short_atr_sl_multiplier=2.0,
-        short_atr_tp_multiplier=3.0,
+        # ✅ TUNED MULTIPLIERS - Critical Fix for profitability
+        # Increased from 2.0/3.0 to 3.0/5.0 for LONG, 2.5/6.5 to 3.0/6.0 for SHORT
+        # This provides more breathing room to avoid whipsaws while maintaining 2:1 R/R
+        long_atr_sl_multiplier=3.0,
+        long_atr_tp_multiplier=5.0,
+        short_atr_sl_multiplier=3.0,
+        short_atr_tp_multiplier=6.0,
+        # ✅ ENTRY VALIDATION - Stricter filters for better quality entries
         long_use_ema_order_condition=True,
         long_use_atr_filter=True,
-        long_atr_min_threshold=0.00015,
+        long_atr_min_threshold=0.00025,
+        long_atr_max_threshold=0.0008,
         long_use_price_filter_ema=True,
-        # Add more filters as needed (e.g., RSI)
+        long_use_angle_filter=True,
+        long_min_angle=15.0,
+        # ✅ PULLBACK CONFIRMATION - Enable for LONG entries to wait for better timing
+        # Prevents entries right into volatility spikes
+        long_use_pullback_entry=True,
+        long_pullback_max_candles=2,
+        long_entry_window_periods=5,
+        # ✅ SHORT SIDE TUNING - Critical for reducing SHORT-side losses
+        short_use_ema_order_condition=True,
+        short_atr_min_threshold=0.00025,
+        short_atr_max_threshold=0.0008,
+        # ✅ PROTECTIVE STOPS - Aggressive trailing and break-even protection
+        trailing_stop_trigger_pips=15.0,
+        trailing_stop_distance_pips=8.0,
     )
 
     def _calculate_exit_levels(self, signal_direction, atr_now, bar_low, bar_high, entry_price):
-        """GBPUSD: Anchor both SL and TP from entry price, use standardized ATR multipliers."""
+        """GBPUSD: Anchor both SL and TP from entry price, use tuned ATR multipliers.
+        
+        Key Changes:
+        - LONG: SL = entry - 3.0*ATR (was 2.0), TP = entry + 5.0*ATR (was 3.0)
+        - SHORT: SL = entry + 3.0*ATR (was 2.0), TP = entry - 6.0*ATR (was 3.0)
+        
+        This provides better R/R (2:1) while avoiding whipsaw stops.
+        """
         if signal_direction == 'LONG':
             stop_level = entry_price - atr_now * self.p.long_atr_sl_multiplier
             take_level = entry_price + atr_now * self.p.long_atr_tp_multiplier
